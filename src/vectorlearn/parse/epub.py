@@ -1,12 +1,24 @@
 """Pass A: EPUB -> spans. Deterministic, no model involved.
 
-EPUB is preferred over PDF on purpose: it is structured HTML, so code
-listings, figures and headings survive intact. PDF is a layout format that
-has forgotten it ever had structure, and recovering that structure is a
-separate project.
+EPUB is preferred over PDF because it *can* carry structure: code listings,
+figures and headings as real elements. Many EPUBs in the wild do not, though
+— anything Calibre converted from a PDF is a flat run of <p> elements with
+the paragraphs shattered at the PDF's line breaks. Since that is a large
+share of what people actually own, handling it is not an edge case.
 
-Implemented against the standard library only - a book parser that cannot
-be run because a wheel failed to build is worse than no book parser.
+Two sources of structure, in priority order:
+
+  1. **The book's own table of contents** (`toc.py`). Even a flat EPUB keeps
+     its NCX or nav document, with labelled entries anchored into the body.
+     That gives exact heading text and real nesting depth — strictly better
+     than guessing which paragraph looks like a heading.
+  2. **The body markup**, where it exists: <h1>-<h6>, <pre>, <figure>.
+
+When the body turns out to be flat, `recover.py` rejoins the fragments and
+reclassifies code and figures before any span is emitted.
+
+Implemented against the standard library only — a book parser that cannot be
+run because a wheel failed to build is worse than no book parser.
 """
 
 from __future__ import annotations
@@ -14,13 +26,15 @@ from __future__ import annotations
 import posixpath
 import re
 import zipfile
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from ..ir import Span, SourceDoc, content_hash, slug
+from . import recover
+from .toc import TocEntry, anchors_by_doc, read_toc
 
-# Tags that end the current span and begin a new one.
 BLOCK_TAGS = {
     "p": "prose", "div": "prose", "blockquote": "prose",
     "h1": "heading", "h2": "heading", "h3": "heading",
@@ -30,58 +44,80 @@ BLOCK_TAGS = {
 }
 SKIP_TAGS = {"script", "style", "head"}
 
-# "7.2 Partitioning", "Chapter 7.", "§2.1", "7.2.3  Rotations"
 SECTION_HEAD = re.compile(r"^\s*(?:§\s*)?(?:Chapter\s+)?(\d+(?:\.\d+)*)[.\s)]+\S")
 EXERCISE_HEAD = re.compile(
-    r"\b(exercise|problem set|problems|review question|self[- ]test|drill)s?\b", re.I
+    r"\b(exercise|problem set|problems|review question|self[- ]test|drill|"
+    r"questions)s?\b", re.I
 )
 
 
+@dataclass
+class Block:
+    kind: str
+    text: str
+    level: int = 0
+    anchors: list[str] = field(default_factory=list)
+    has_img: bool = False
+    alt: str | None = None
+    synthetic: bool = False  # inserted from the TOC rather than found in markup
+
+
 class _BlockExtractor(HTMLParser):
-    """Flattens XHTML into an ordered list of (kind, text) blocks."""
+    """Flattens XHTML into ordered blocks, keeping anchors and images."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.blocks: list[tuple[str, str, int]] = []  # kind, text, heading_level
+        self.blocks: list[Block] = []
         self._buf: list[str] = []
         self._kind = "prose"
         self._level = 0
-        self._depth = 0  # nesting depth of the block that set self._kind
+        self._depth = 0
         self._skip = 0
-        self._img_pending = False
+        self._anchors: list[str] = []
+        self._pending_anchors: list[str] = []
+        self._has_img = False
+        self._alt: str | None = None
 
-    # -- buffer management --------------------------------------------------
     def _flush(self) -> None:
-        text = re.sub(r"[ \t\r\f\v]+", " ", "".join(self._buf)).strip()
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        if text:
-            self.blocks.append((self._kind, text, self._level))
+        text = recover.normalise("".join(self._buf))
+        if text or self._has_img:
+            self.blocks.append(Block(
+                kind=self._kind, text=text, level=self._level,
+                anchors=self._anchors, has_img=self._has_img, alt=self._alt,
+            ))
+        else:
+            # Carry an empty block's anchors forward to the next real one.
+            self._pending_anchors.extend(self._anchors)
         self._buf = []
         self._kind = "prose"
         self._level = 0
+        self._anchors = list(self._pending_anchors)
+        self._pending_anchors = []
+        self._has_img = False
+        self._alt = None
 
-    # -- HTMLParser hooks ---------------------------------------------------
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag, attrs):
         if tag in SKIP_TAGS:
             self._skip += 1
             return
         if self._skip:
             return
 
+        a = dict(attrs)
+        if a.get("id"):
+            self._anchors.append(a["id"])
+
         if tag == "img":
-            alt = dict(attrs).get("alt") or ""
-            self._img_pending = True
-            if alt:
-                self._buf.append(f"[figure: {alt}]")
+            self._has_img = True
+            self._alt = recover.useful_alt(a.get("alt"))
+            if self._alt:
+                self._buf.append(f"[figure: {self._alt}]")
             return
 
         kind = BLOCK_TAGS.get(tag)
         if kind is None:
             return
-
-        # A nested block inside an open one (e.g. <code> in <pre>) does not
-        # restart the span; only a sibling-level block does.
-        if self._buf and self._depth == 0:
+        if (self._buf or self._has_img) and self._depth == 0:
             self._flush()
         if self._depth == 0:
             self._kind = kind
@@ -90,7 +126,7 @@ class _BlockExtractor(HTMLParser):
         elif kind == "code":
             self._kind = "code"
 
-    def handle_endtag(self, tag: str) -> None:
+    def handle_endtag(self, tag):
         if tag in SKIP_TAGS:
             self._skip = max(0, self._skip - 1)
             return
@@ -100,13 +136,94 @@ class _BlockExtractor(HTMLParser):
             self._depth = 0
             self._flush()
 
-    def handle_data(self, data: str) -> None:
+    def handle_data(self, data):
         if not self._skip:
             self._buf.append(data)
 
-    def close(self) -> None:  # type: ignore[override]
+    def close(self):  # type: ignore[override]
         super().close()
         self._flush()
+
+
+# --- structure assembly -----------------------------------------------------
+
+def _insert_toc_headings(blocks: list[Block], anchors: dict[str, TocEntry]) -> list[Block]:
+    """Put a real heading where the TOC says a section begins."""
+    if not anchors:
+        return blocks
+    out: list[Block] = []
+    seen: set[str] = set()
+    for block in blocks:
+        for anchor in block.anchors:
+            entry = anchors.get(anchor)
+            if entry and anchor not in seen:
+                seen.add(anchor)
+                out.append(Block(
+                    kind="heading", text=entry.label,
+                    level=min(6, entry.depth), synthetic=True,
+                ))
+        out.append(block)
+    return out
+
+
+def _drop_heading_echo(blocks: list[Block]) -> list[Block]:
+    """Remove the body copy of a heading we already inserted from the TOC.
+
+    Converted books usually keep the heading as an ordinary paragraph, so
+    without this every section title appears twice — once as structure and
+    once as a stray one-line span that teaches nothing.
+
+    Runs *after* rejoining, not before: a title long enough to wrap arrives
+    as two fragments ("Packt is searching for authors like" / "you") and only
+    becomes recognisable once they have been put back together.
+    """
+    titles = {
+        b.text.casefold() for b in blocks if b.kind == "heading" and b.synthetic
+    }
+    if not titles:
+        return blocks
+    # Exact equality only. A standalone paragraph identical to a section title
+    # is the title; a paragraph that merely starts with it is ordinary prose.
+    return [
+        b for b in blocks
+        if not (b.kind == "prose" and b.text.casefold() in titles)
+    ]
+
+
+def _recover_flat(blocks: list[Block]) -> list[Block]:
+    """Reclassify and rejoin a document that lost its markup."""
+    width = recover.line_width(
+        [len(b.text) for b in blocks if b.kind == "prose"]
+    )
+    staged: list[Block] = []
+    for b in blocks:
+        if b.kind == "heading":
+            staged.append(b)
+        elif b.has_img and not b.text:
+            staged.append(Block(kind="figure", text=f"[figure: {b.alt or 'unlabelled'}]",
+                                anchors=b.anchors, has_img=True, alt=b.alt))
+        elif b.kind == "prose" and recover.looks_like_code(b.text):
+            staged.append(Block(kind="code", text=b.text, anchors=b.anchors))
+        else:
+            staged.append(b)
+
+    merged: list[Block] = []
+    for b in staged:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.kind == b.kind
+            and b.kind in ("prose", "code")
+            and recover.rejoin(prev.text, b.text, width)
+        ):
+            joiner = "" if prev.text.endswith("-") else (
+                "\n" if b.kind == "code" else " ")
+            body = prev.text[:-1] if prev.text.endswith("-") else prev.text
+            merged[-1] = Block(kind=prev.kind, text=f"{body}{joiner}{b.text}",
+                               anchors=prev.anchors + b.anchors)
+        else:
+            merged.append(b)
+    return _drop_heading_echo(merged)
 
 
 def _opf_path(zf: zipfile.ZipFile) -> str:
@@ -118,9 +235,7 @@ def _opf_path(zf: zipfile.ZipFile) -> str:
     return rootfile.get("full-path")  # type: ignore[return-value]
 
 
-def _spine_documents(zf: zipfile.ZipFile) -> tuple[str, list[str]]:
-    """Return (book title, content document paths in reading order)."""
-    opf = _opf_path(zf)
+def _spine_documents(zf: zipfile.ZipFile, opf: str) -> tuple[str, list[str]]:
     base = posixpath.dirname(opf)
     root = ET.fromstring(zf.read(opf))
     ns = {"opf": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
@@ -140,8 +255,7 @@ def _spine_documents(zf: zipfile.ZipFile) -> tuple[str, list[str]]:
     return title, docs
 
 
-def _classify(kind: str, text: str, heading_path: list[str]) -> str:
-    """Refine a block kind using its surrounding headings."""
+def _classify(kind: str, heading_path: list[str]) -> str:
     if kind == "heading":
         return "heading"
     if any(EXERCISE_HEAD.search(h) for h in heading_path[-2:]):
@@ -155,11 +269,17 @@ def parse_epub(path: str | Path) -> SourceDoc:
     raw = path.read_bytes()
 
     with zipfile.ZipFile(path) as zf:
-        title, docs = _spine_documents(zf)
+        opf = _opf_path(zf)
+        title, docs = _spine_documents(zf, opf)
+        toc = read_toc(zf, opf)
+        by_doc = anchors_by_doc(toc)
+
         spans: list[Span] = []
         ordinal = 0
         heading_stack: list[tuple[int, str]] = []
-        section = None
+        section: str | None = None
+        chapter: str | None = None
+        recovered_docs = 0
 
         for doc_path in docs:
             try:
@@ -170,28 +290,43 @@ def parse_epub(path: str | Path) -> SourceDoc:
             parser = _BlockExtractor()
             parser.feed(html)
             parser.close()
+            blocks = parser.blocks
+
+            flat = recover.looks_flat(
+                [b.kind for b in blocks], [len(b.text.split()) for b in blocks]
+            )
+            blocks = _insert_toc_headings(blocks, by_doc.get(doc_path, {}))
+            if flat:
+                blocks = _recover_flat(blocks)
+                recovered_docs += 1
+
             doc_id = slug(posixpath.basename(doc_path).rsplit(".", 1)[0])
 
-            for kind, text, level in parser.blocks:
-                if kind == "heading":
+            for block in blocks:
+                if block.kind == "heading":
+                    level = block.level or 1
                     heading_stack = [(l, h) for l, h in heading_stack if l < level]
-                    heading_stack.append((level, text))
-                    m = SECTION_HEAD.match(text)
-                    if m:
+                    heading_stack.append((level, block.text))
+                    if level == 1:
+                        chapter = block.text
+                        # Section numbering restarts with the chapter; carrying
+                        # it across would attribute one chapter's numbers to the
+                        # next, which matters in back matter that lists them.
+                        section = None
+                    if m := SECTION_HEAD.match(block.text):
                         section = m.group(1)
 
                 heading_path = [h for _, h in heading_stack]
-                spans.append(
-                    Span(
-                        span_id=f"{doc_id}:{ordinal:04d}",
-                        doc_id=doc_id,
-                        ordinal=ordinal,
-                        kind=_classify(kind, text, heading_path),  # type: ignore[arg-type]
-                        text=text,
-                        section=section,
-                        heading_path=heading_path,
-                    )
-                )
+                spans.append(Span(
+                    span_id=f"{doc_id}:{ordinal:04d}",
+                    doc_id=doc_id,
+                    ordinal=ordinal,
+                    kind=_classify(block.kind, heading_path),  # type: ignore[arg-type]
+                    text=block.text,
+                    section=section,
+                    chapter=chapter,
+                    heading_path=heading_path,
+                ))
                 ordinal += 1
 
     return SourceDoc(
@@ -199,4 +334,6 @@ def parse_epub(path: str | Path) -> SourceDoc:
         title=title,
         source_hash=content_hash(raw),
         spans=spans,
+        recovered_docs=recovered_docs,
+        toc_entries=len(toc),
     )

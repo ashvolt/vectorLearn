@@ -67,9 +67,35 @@ pipeline from *"the model guesses the whole graph"* into *"the model fills
 documented gaps"* — with a precision baseline to measure the guesses
 against. `parse` reports how many it found.
 
-EPUB only, on purpose: it is structured HTML, so code listings, figures and
-headings survive. PDF is a layout format that has forgotten it ever had
-structure.
+EPUB only, on purpose: it *can* carry structure, where PDF is a layout format
+that has forgotten it ever had any.
+
+### When the EPUB has no structure either
+
+Much of what people own is a PDF that Calibre converted: every block a `<p>`
+of the same class, no `<h1>`, no `<pre>`, no `<figure>`, and paragraphs
+shattered at the PDF's line breaks — roughly ten words per block. Parsed
+naively it yields thousands of fragments and no chapters, and every later
+pass then produces plausible nonsense from it. Since that is a large share of
+real input, it is handled rather than rejected.
+
+The structure has not actually been lost. It is in the book's **navigation
+document** — the NCX or EPUB 3 nav — as labelled entries anchored into the
+body. That is exact, so headings come from there rather than from guessing
+which paragraph looks like one. The rest is recovered heuristically:
+
+- **Fragments are rejoined.** Justified text runs to a fixed measure, so a
+  full-width line was broken by the typesetter and a visibly short one ends
+  the paragraph. That signal works where punctuation does not.
+- **Code is reclassified** by character composition — listings survive
+  conversion as prose but look nothing like it.
+- **Figures are marked**, and placeholder alt text (`"Image 106"`) discarded.
+- **Heading echoes are dropped**, after rejoining rather than before: a title
+  long enough to wrap arrives as two fragments and is only recognisable once
+  reassembled.
+
+Recovery only runs on documents that show the damage, so a well-formed EPUB
+passes through untouched. `parse` reports how many documents were rebuilt.
 
 ## The model seam
 
@@ -101,13 +127,18 @@ vectorlearn models
 vectorlearn qualify --all
 
 # 2. Deterministic passes — no model at all
-vectorlearn parse book.epub --chapter 7      # spans, sections, xrefs found
-vectorlearn plan  book.epub --chapter 7      # the shape of a run
+vectorlearn parse    book.epub               # spans, structure, xrefs found
+vectorlearn chapters book.epub               # pick one to work on
+vectorlearn plan     book.epub --chapter 8   # the shape of a run
 
 # 3. The real thing
 vectorlearn build book.epub --chapter 7 --model qwen2.5:32b --eval
 vectorlearn show  quicksort-partition --sources
 ```
+
+`--chapter` takes a number (the Nth chapter), part of a title, or a section
+number like `7.2` — books number their sections or title them, and converted
+ones usually only have titles.
 
 Omit `--model` and the largest installed model is used. `build` writes
 `out/course.json`, `out/source.json` and `out/build_warnings.txt`; `--eval`
@@ -163,16 +194,17 @@ playground work rescues a course that teaches things the book never said.
 ## Tests
 
 ```bash
-pytest          # 60 tests, no Ollama or API key required
+pytest          # 88 tests, no Ollama or API key required
 ```
 
 The suite covers the deterministic half end-to-end (parsing, cross-reference
 mining, graph layering, cycle-breaking, coverage) against a synthetic EPUB
 fixture; the generation passes' plumbing — fabricated-citation rejection,
 ungrounded-step rejection, step-mix warnings, the scorecard gate — against a
-stub provider; and the local provider itself — schema flattening, the repair
-loop, context sizing, tier routing, drift detection, grading — against a stub
-HTTP server standing in for Ollama.
+stub provider; the local provider itself — schema flattening, the repair loop,
+context sizing, tier routing, drift detection, grading — against a stub HTTP
+server standing in for Ollama; and structure recovery against a second fixture
+built to look like Calibre output.
 
 What it does **not** cover is the model's judgement. That is what Phase 0
 measures by hand, and it is the only part that decides whether this works.

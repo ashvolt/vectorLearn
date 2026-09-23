@@ -27,7 +27,7 @@ from .ir import Course, SourceDoc
 from .parse import mine_xrefs, parse_epub
 from .parse.xrefs import xref_stats
 from .passes import PipelineOptions, build_course
-from .passes.pipeline import plan_cost, select_chapter
+from .passes.pipeline import chapter_names, plan_cost, select_chapter
 
 OUT = Path("out")
 
@@ -110,7 +110,14 @@ def cmd_parse(args) -> int:
     print("xrefs       " + "  ".join(f"{k}:{v}" for k, v in xref_stats(doc.xrefs).items()))
 
     sections = sorted({s.section for s in spans if s.section}, key=_sortkey)
-    print(f"sections    {', '.join(sections[:14])}{' …' if len(sections) > 14 else ''}")
+    if sections:
+        print(f"sections    {', '.join(sections[:14])}{' …' if len(sections) > 14 else ''}")
+
+    chapters = chapter_names(doc)
+    print(f"chapters    {len(chapters)}   (vectorlearn chapters {args.book})")
+    if doc.recovered_docs:
+        print(f"recovered   {doc.recovered_docs} document(s) had no usable markup; "
+              f"structure rebuilt from {doc.toc_entries} TOC entries")
 
     if args.dump:
         OUT.mkdir(exist_ok=True)
@@ -260,6 +267,31 @@ def cmd_show(args) -> int:
     return 0
 
 
+def cmd_chapters(args) -> int:
+    doc = parse_epub(args.book)
+    names = chapter_names(doc)
+    if not names:
+        print("no chapters detected — this EPUB has neither headings nor a usable TOC",
+              file=sys.stderr)
+        return 1
+
+    counts: dict[str, dict[str, int]] = {}
+    for s in doc.spans:
+        if s.chapter:
+            c = counts.setdefault(s.chapter, {})
+            c[s.kind] = c.get(s.kind, 0) + 1
+            c["words"] = c.get("words", 0) + s.word_count
+
+    print(f"{'#':>3}  {'WORDS':>7} {'CODE':>5} {'FIG':>4} {'EX':>4}  TITLE")
+    print(f"{'-' * 3}  {'-' * 7} {'-' * 5} {'-' * 4} {'-' * 4}  {'-' * 44}")
+    for i, name in enumerate(names, 1):
+        c = counts.get(name, {})
+        print(f"{i:>3}  {c.get('words', 0):>7,} {c.get('code', 0):>5} "
+              f"{c.get('figure', 0):>4} {c.get('exercise', 0):>4}  {name[:52]}")
+    print("\nSelect one with --chapter <number> or --chapter <part of the title>.")
+    return 0
+
+
 def cmd_models(args) -> int:
     from .llm import OllamaUnavailable, installed_models
 
@@ -385,6 +417,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--course", default="out/course.json")
     sp.add_argument("--sources", action="store_true", help="print the cited spans too")
     sp.set_defaults(fn=cmd_show)
+
+    sp = sub.add_parser("chapters", help="list the book's chapters and their contents")
+    sp.add_argument("book")
+    sp.set_defaults(fn=cmd_chapters)
 
     sp = sub.add_parser("models", help="list models installed on this machine")
     sp.add_argument("--host")

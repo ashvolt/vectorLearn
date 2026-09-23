@@ -43,6 +43,7 @@ class Span(BaseModel):
     kind: SpanKind
     text: str
     section: str | None = None  # nearest enclosing numbered section, e.g. "7.2"
+    chapter: str | None = None  # top-level TOC entry this span falls under
     heading_path: list[str] = Field(default_factory=list)
     word_count: int = 0
     teachable: bool = True  # set by the span classifier; see passes/a_parse
@@ -78,6 +79,12 @@ class SourceDoc(BaseModel):
     source_hash: str
     spans: list[Span]
     xrefs: list[XRef] = Field(default_factory=list)
+
+    # Parse diagnostics. `recovered_docs` counts content documents that
+    # arrived without usable markup and had their structure reconstructed —
+    # a non-zero value is the signal that this book came from a PDF.
+    recovered_docs: int = 0
+    toc_entries: int = 0
 
     def span_index(self) -> dict[str, Span]:
         return {s.span_id: s for s in self.spans}

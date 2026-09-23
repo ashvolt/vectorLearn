@@ -48,14 +48,37 @@ class BuildReport:
         self.warnings.append(msg)
 
 
+def chapter_names(doc: SourceDoc) -> list[str]:
+    """Top-level chapter titles, in reading order."""
+    return list(dict.fromkeys(s.chapter for s in doc.spans if s.chapter))
+
+
 def select_chapter(doc: SourceDoc, chapter: str | None):
-    """Narrow to one chapter. Phase 0 is deliberately one chapter wide."""
+    """Narrow to one chapter. Phase 0 is deliberately one chapter wide.
+
+    Books number their sections ("7.2") or they title them ("Getting Your
+    Neurons to Work"); PDF conversions usually only have titles, recovered
+    from the table of contents. All three are accepted, plus a 1-based index
+    into the chapter list for when the title is long or awkward to type.
+    """
     if not chapter:
         return doc.spans
+
+    names = chapter_names(doc)
+
+    # A bare number means the Nth chapter whenever the book has that many.
+    # Section numbers are checked only when the index is out of range, so
+    # "--chapter 7" reads as section 7 in a three-chapter excerpt and as the
+    # seventh chapter in a full book — which is what someone typing it means.
+    if chapter.isdigit() and 1 <= int(chapter) <= len(names):
+        return [s for s in doc.spans if s.chapter == names[int(chapter) - 1]]
+
+    needle = chapter.casefold()
     hits = [
         s for s in doc.spans
-        if chapter.lower() in s.doc_id.lower()
+        if (s.chapter and needle in s.chapter.casefold())
         or (s.section and (s.section == chapter or s.section.startswith(chapter + ".")))
+        or needle in s.doc_id.casefold()
     ]
     return hits or doc.spans
 

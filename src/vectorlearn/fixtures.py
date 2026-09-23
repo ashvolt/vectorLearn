@@ -136,3 +136,115 @@ def find_drift(text: str) -> list[str]:
     """Return drift terms present in generated text."""
     low = text.lower()
     return sorted({t for t in DRIFT_TERMS if t in low})
+
+
+# --------------------------------------------------------------------------
+# A PDF-converted book: the shape Calibre produces, which is a large share of
+# what people actually own. No headings, no <pre>, no <figure> — every block a
+# <p> of the same class, paragraphs shattered at the PDF's line breaks, and
+# the structure surviving only in the NCX.
+# --------------------------------------------------------------------------
+
+FLAT_CONTAINER = CONTAINER
+
+FLAT_OPF = """<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Converted Data Structures</dc:title>
+    <dc:identifier id="id">urn:test:flat</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="body" href="index_split_000.html" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="body"/></spine>
+</package>"""
+
+FLAT_NCX = """<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+ <navMap>
+  <navPoint id="n1"><navLabel><text>Sorting</text></navLabel>
+    <content src="index_split_000.html#p10"/>
+    <navPoint id="n2"><navLabel><text>Quicksort partitioning</text></navLabel>
+      <content src="index_split_000.html#p20"/></navPoint>
+    <navPoint id="n3">
+      <navLabel><text>A heading long enough that the typesetter wrapped it</text></navLabel>
+      <content src="index_split_000.html#p30"/></navPoint>
+  </navPoint>
+ </navMap>
+</ncx>"""
+
+# Lines run to a fixed measure, as justified PDF text does; a visibly short
+# line is the end of a paragraph. Long enough to clear the evidence floor,
+# because flatness is a statistical judgement and five blocks decide nothing.
+_FILLER = [
+    ("Comparison sorts cannot do better than n log n in the worst case, and the",
+     "proof of that bound is worth following once even if the result is already",
+     "familiar to you."),
+    ("An in-place algorithm rearranges the input array itself rather than building",
+     "a second one, which matters when the array is large enough that a copy would",
+     "not fit in memory."),
+    ("Stability means that two elements comparing equal keep their original relative",
+     "order, a property that matters whenever records are sorted on one field after",
+     "having been sorted on another."),
+    ("The recursion depth of quicksort is bounded by the number of times the larger",
+     "side can be halved, so sorting the smaller side first keeps the stack shallow",
+     "even on adversarial input."),
+    ("Choosing the last element as the pivot is simple to implement and adequate on",
+     "random data, though it degrades badly on input that is already in order, as",
+     "the exercises explore."),
+    ("Merge sort trades memory for a guarantee: it needs room for a second array,",
+     "and in exchange its worst case is the same as its average case, which matters",
+     "when latency has to be predictable."),
+    ("A sorting network fixes the sequence of comparisons in advance, independently",
+     "of the data, which makes it a poor general-purpose choice but an excellent one",
+     "for hardware."),
+    ("Counting sort abandons comparisons entirely and runs in linear time, at the",
+     "cost of requiring keys drawn from a small known range, which is a much stronger",
+     "precondition than it first appears."),
+    ("The practical advice at the end of this chapter is to use the sort your standard",
+     "library provides, and to understand these algorithms so that you can tell when",
+     "that advice stops applying."),
+]
+
+
+def _filler_blocks() -> str:
+    out = []
+    for para in _FILLER:
+        out += [f'<p class="calibre1">{line}</p>' for line in para]
+    return "\n".join(out)
+
+
+FLAT_BODY = """<html xmlns="http://www.w3.org/1999/xhtml"><body>
+<p class="calibre1"><a id="p10"></a>Sorting</p>
+<p class="calibre1">Sorting an array means rearranging its elements so that they appear in a known</p>
+<p class="calibre1">order. Almost every algorithm in this chapter depends on the ability to compare</p>
+<p class="calibre1">two elements and to exchange them.</p>
+<p class="calibre1"><a id="p20"></a>Quicksort partitioning</p>
+<p class="calibre1">The Lomuto scheme maintains the invariant that every element to the left of the</p>
+<p class="calibre1">index i is less than or equal to the pivot. Recall from Section 2.1 that indexing</p>
+<p class="calibre1">is a constant-time operation.</p>
+<p class="calibre1">def partition(a, lo, hi):</p>
+<p class="calibre1">    pivot = a[hi]</p>
+<p class="calibre1">    i = lo</p>
+<p class="calibre1">    return i</p>
+<p class="calibre1"><img src="fig1.png" alt="Image 42" class="calibre2"/></p>
+<p class="calibre1"><a id="p30"></a>A heading long enough that the typesetter wrapped</p>
+<p class="calibre1">it</p>
+<p class="calibre1">Some following prose that belongs to the wrapped heading's section and runs on</p>
+<p class="calibre1">for a second line before stopping.</p>
+__FILLER__
+</body></html>"""
+
+
+def build_flat_epub(path: Path) -> Path:
+    """A PDF-converted EPUB, for exercising structure recovery."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("META-INF/container.xml", FLAT_CONTAINER)
+        z.writestr("OEBPS/content.opf", FLAT_OPF)
+        z.writestr("OEBPS/toc.ncx", FLAT_NCX)
+        z.writestr("OEBPS/index_split_000.html",
+                   FLAT_BODY.replace("__FILLER__", _filler_blocks()))
+    return path
