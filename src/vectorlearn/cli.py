@@ -114,7 +114,7 @@ def cmd_parse(args) -> int:
 
     if args.dump:
         OUT.mkdir(exist_ok=True)
-        (OUT / "source.json").write_text(doc.model_dump_json(indent=2))
+        (OUT / "source.json").write_text(doc.model_dump_json(indent=2), encoding="utf-8")
         print(f"\nwrote {OUT / 'source.json'}")
     return 0
 
@@ -158,9 +158,9 @@ def cmd_build(args) -> int:
     course, doc, report = build_course(args.book, provider, opts)
 
     OUT.mkdir(exist_ok=True)
-    (OUT / "course.json").write_text(course.model_dump_json(indent=2))
-    (OUT / "source.json").write_text(doc.model_dump_json(indent=2))
-    (OUT / "build_warnings.txt").write_text("\n".join(report.warnings))
+    (OUT / "course.json").write_text(course.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "source.json").write_text(doc.model_dump_json(indent=2), encoding="utf-8")
+    (OUT / "build_warnings.txt").write_text("\n".join(report.warnings), encoding="utf-8")
 
     print(f"nodes {len(course.nodes)}  steps {sum(len(n.steps) for n in course.nodes)}  "
           f"edges {len(course.edges)}  calls {report.provider_calls}  "
@@ -177,12 +177,12 @@ def cmd_build(args) -> int:
 
 
 def _load(path: Path) -> tuple[Course, SourceDoc]:
-    course = Course.model_validate_json(path.read_text())
+    course = Course.model_validate_json(path.read_text(encoding="utf-8"))
     src = path.parent / "source.json"
     if not src.exists():
         print(f"missing {src} — run `build` or `parse --dump` first", file=sys.stderr)
         raise SystemExit(2)
-    return course, SourceDoc.model_validate_json(src.read_text())
+    return course, SourceDoc.model_validate_json(src.read_text(encoding="utf-8"))
 
 
 def _run_eval(course: Course, doc: SourceDoc, provider, args) -> int:
@@ -199,12 +199,12 @@ def _run_eval(course: Course, doc: SourceDoc, provider, args) -> int:
     warnings = []
     wpath = OUT / "build_warnings.txt"
     if wpath.exists():
-        warnings = [w for w in wpath.read_text().splitlines() if w.strip()]
+        warnings = [w for w in wpath.read_text(encoding="utf-8").splitlines() if w.strip()]
 
     report = render_report(course, doc, coverage, fidelity, warnings)
     print(report)
     OUT.mkdir(exist_ok=True)
-    (OUT / "scorecard.txt").write_text(report)
+    (OUT / "scorecard.txt").write_text(report, encoding="utf-8")
     return 0 if "GATE PASSED" in report else 1
 
 
@@ -315,7 +315,7 @@ def cmd_qualify(args) -> int:
     report = render_qualification(results)
     print(report)
     OUT.mkdir(exist_ok=True)
-    (OUT / "qualification.txt").write_text(report)
+    (OUT / "qualification.txt").write_text(report, encoding="utf-8")
     return 0 if results and results[0].grade in ("gold", "silver") else 1
 
 
@@ -324,7 +324,19 @@ def cmd_schema(args) -> int:
     return 0
 
 
+def _force_utf8_console() -> None:
+    """Windows consoles still default to a legacy code page (cp1252), which
+    cannot encode the arrows and bars the reports use. Reconfiguring is
+    harmless everywhere else."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass  # already utf-8, or not a real stream (piped, captured)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_console()
     p = argparse.ArgumentParser(prog="vectorlearn", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)

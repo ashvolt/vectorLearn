@@ -250,3 +250,23 @@ def test_a_failed_task_is_unqualified():
     q = _grade(_q(tasks_ok=2, error="pass D: boom"), _stats())
     assert q.grade == "unqualified"
     assert q.reasons[0].startswith("pass D")
+
+
+# --- encoding regression guard ----------------------------------------------
+
+def test_all_file_io_declares_utf8():
+    """Windows defaults text files to cp1252, which cannot encode the arrows,
+    em-dashes and bar characters in generated lessons and reports. Every read
+    and write must say utf-8 explicitly — this failed in the field, so it is
+    guarded rather than remembered."""
+    import re
+    from pathlib import Path
+    import vectorlearn
+
+    root = Path(vectorlearn.__file__).parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\.(read|write)_text\(", line) and "encoding=" not in line:
+                offenders.append(f"{path.relative_to(root)}:{i}")
+    assert not offenders, "text IO without an explicit encoding: " + ", ".join(offenders)

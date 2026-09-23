@@ -84,14 +84,14 @@ class _Cache:
         if not path.exists():
             return None
         try:
-            return model.model_validate_json(path.read_text())
+            return model.model_validate_json(path.read_text(encoding="utf-8"))
         except ValidationError:
             path.unlink(missing_ok=True)  # schema moved on; drop the stale entry
             return None
 
     def put(self, key: str, value: BaseModel) -> None:
         if self.root:
-            (self.root / f"{key}.json").write_text(value.model_dump_json(indent=2))
+            (self.root / f"{key}.json").write_text(value.model_dump_json(indent=2), encoding="utf-8")
 
 
 class AnthropicProvider:
