@@ -1,5 +1,14 @@
-"""Builds a small but realistic EPUB: numbered sections, code listings,
-figures, exercises, and the author cross-references the miner depends on."""
+"""A synthetic textbook chapter, used by the tests and by `vectorlearn qualify`.
+
+It ships inside the package rather than the test tree because model
+qualification has to run on a machine that has no real book yet — benchmarking
+which local model can drive the pipeline is the first thing a new contributor
+does, and it should need nothing but Ollama.
+
+The content is deliberately shaped to expose model failure modes: numbered
+sections, explicit author cross-references, a code listing with an HTML-escaped
+operator, an exercise block, and a figure with alt text only.
+"""
 
 from __future__ import annotations
 
@@ -92,7 +101,7 @@ sorts the smaller side recursively and loops on the larger side.</p>
 </body></html>"""
 
 
-def build(path: Path) -> Path:
+def build_sample_epub(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip")
@@ -102,3 +111,28 @@ def build(path: Path) -> Path:
         z.writestr("OEBPS/ch02.xhtml", CH2)
         z.writestr("OEBPS/ch07.xhtml", CH7)
     return path
+
+
+# Terms a model can only produce from its own priors — none of them appear
+# anywhere in the text above. If a generated lesson mentions one, the model has
+# drifted off the source and is teaching its own training data under the
+# author's name. Deterministic, offline, and free: no judge required.
+DRIFT_TERMS: tuple[str, ...] = (
+    "hoare",            # the other partition scheme; the fixture teaches Lomuto only
+    "median-of-three",
+    "median of three",
+    "introsort",
+    "timsort",
+    "heapsort",
+    "tail call",
+    "numpy",
+    "std::sort",
+    "dual-pivot",
+    "insertion sort",   # the classic "small subarray" optimisation, never mentioned
+)
+
+
+def find_drift(text: str) -> list[str]:
+    """Return drift terms present in generated text."""
+    low = text.lower()
+    return sorted({t for t in DRIFT_TERMS if t in low})

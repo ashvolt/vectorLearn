@@ -6,7 +6,7 @@ from vectorlearn.ir import Check, Course, Edge, Environment, Node, Step
 from vectorlearn.parse import mine_xrefs, parse_epub
 from vectorlearn.passes.edges import break_cycles, edges_from_xrefs
 
-from .fixture import build
+from vectorlearn.fixtures import build_sample_epub as build
 
 
 def _step(**kw):

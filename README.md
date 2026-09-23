@@ -73,38 +73,73 @@ structure.
 
 ## The model seam
 
-Every model call is a **typed task** — stable system prompt, volatile
-payload, Pydantic output model the response must validate against — behind
-a provider-agnostic interface, with schema-repair retries and a
-content-addressed cache.
+**Runs entirely on local models.** No API key, no account, nothing leaves the
+machine. Ollama is the default provider; the book never goes anywhere.
 
-Nothing in Phase 0 needs bring-your-own-model, but building the seam now
-means BYOK later is an implementation of `Provider`, not a refactor. The
-model-qualification suite that grades a connected model is this same task
-set run against a fixture.
+Every model call is a **typed task** — stable system prompt, volatile payload,
+Pydantic output model the response must validate against — behind a
+provider-agnostic interface, with schema-repair retries and a content-addressed
+cache. Ollama constrains generation to a JSON Schema via its `format` field, so
+the same Pydantic model that validates a response also shapes it on the way out.
 
-Tier routing (`bulk` / `reason`) is a default, not a law — `--model X`
-runs every tier on one model, which is what a BYOK user with a single
-endpoint will do. The fidelity judge stays on the reasoning tier
-deliberately: a cheap judge produces a flattering number on the one metric
-that gates the project.
+Three local-specific hazards are handled, each of which fails *silently*:
+`num_ctx` is sized from the actual prompt (Ollama's default truncates a chapter
+without saying so), Pydantic `$ref`/`$defs` are inlined before being sent, and
+the schema is also described in the prompt — grammar constraints guarantee
+well-formed JSON, not sensible field contents.
+
+Tier routing (`bulk` / `reason`) lets a small model do span classification while
+a larger one writes lessons; `--model X` alone runs everything on one.
 
 ## Usage
 
 ```bash
 pip install -e ".[dev]"
 
-# Deterministic — no API key needed
-vectorlearn parse  book.epub --chapter 7     # spans, sections, xrefs found
-vectorlearn plan   book.epub --chapter 7     # what a run would cost
+# 1. Which models does this machine have, and which can do the job?
+vectorlearn models
+vectorlearn qualify --all
 
-export ANTHROPIC_API_KEY=sk-ant-...
-vectorlearn build  book.epub --chapter 7 --eval
-vectorlearn show   quicksort-partition --sources
+# 2. Deterministic passes — no model at all
+vectorlearn parse book.epub --chapter 7      # spans, sections, xrefs found
+vectorlearn plan  book.epub --chapter 7      # the shape of a run
+
+# 3. The real thing
+vectorlearn build book.epub --chapter 7 --model qwen2.5:32b --eval
+vectorlearn show  quicksort-partition --sources
 ```
 
-`build` writes `out/course.json`, `out/source.json` and
-`out/build_warnings.txt`. `--eval` appends the scorecard.
+Omit `--model` and the largest installed model is used. `build` writes
+`out/course.json`, `out/source.json` and `out/build_warnings.txt`; `--eval`
+appends the scorecard.
+
+## Model qualification
+
+`vectorlearn qualify` answers the first question — *which local model is worth a
+Phase 0 run?* — before you have a book. It runs the real passes against a sample
+chapter shipped inside the package, so it needs no network and no input.
+
+| Grade | Meaning |
+|-------|---------|
+| **gold** | full pipeline — all step types, synthesis checks, nuanced grading |
+| **silver** | simplified IR — fewer step types, templated checks, no boss fights |
+| **bronze** | structure only — fine for parsing and graph work, not for lessons |
+| **unqualified** | cannot hold the schema |
+
+Four things are measured, and the third is the interesting one:
+
+1. **Schema compliance** — valid IR, and on the first try. A model needing two
+   repairs per call will not finish a book.
+2. **Citation discipline** — does it cite only span ids it was given?
+3. **Grounding** — the sample chapter teaches Lomuto partition and nothing else,
+   so a lesson mentioning Hoare, median-of-three or introsort is reciting
+   training data under the author's name. Deterministic, offline, no judge
+   required — and it catches a response that is otherwise schema-perfect.
+4. **Instruction adherence** — node counts in range, required step mix present,
+   checks that can actually gate.
+
+Throughput is recorded too: a model that passes at four tokens a second is not
+a model you will use.
 
 ## Phase 0
 
@@ -117,6 +152,9 @@ one that cannot be automated:
 | **Coverage** | ≥ 80% of teachable words owned by some node | Without it the pipeline can silently drop a third of a chapter while telling the learner they are 60% done. Coverage is also what makes that percentage honest. |
 | **Reading it yourself** | no threshold | The numbers are necessary, not sufficient. `vectorlearn show` prints a node as a learner sees it; `--sources` prints the cited passages beside it. |
 
+Run `qualify` first. A bronze model will fail these gates, and you want to know
+that it was the model rather than the pipeline.
+
 `vectorlearn eval` exits non-zero when a gate fails.
 
 **If the gates fail, that is the finding.** No amount of map, streak or
@@ -125,14 +163,16 @@ playground work rescues a course that teaches things the book never said.
 ## Tests
 
 ```bash
-pytest          # 35 tests, no API key required
+pytest          # 60 tests, no Ollama or API key required
 ```
 
 The suite covers the deterministic half end-to-end (parsing, cross-reference
 mining, graph layering, cycle-breaking, coverage) against a synthetic EPUB
-fixture, and the generation passes' plumbing — fabricated-citation
-rejection, ungrounded-step rejection, step-mix warnings, the scorecard gate
-— against a stub provider.
+fixture; the generation passes' plumbing — fabricated-citation rejection,
+ungrounded-step rejection, step-mix warnings, the scorecard gate — against a
+stub provider; and the local provider itself — schema flattening, the repair
+loop, context sizing, tier routing, drift detection, grading — against a stub
+HTTP server standing in for Ollama.
 
 What it does **not** cover is the model's judgement. That is what Phase 0
 measures by hand, and it is the only part that decides whether this works.

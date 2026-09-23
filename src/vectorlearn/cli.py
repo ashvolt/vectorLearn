@@ -1,11 +1,17 @@
-"""Phase 0 command line.
+"""Phase 0 command line. Runs entirely on local models via Ollama.
 
-    vectorlearn parse  book.epub                  # pass A only — no API key needed
-    vectorlearn plan   book.epub --chapter 7      # what a run would cost
-    vectorlearn build  book.epub --chapter 7      # passes A–E -> out/
-    vectorlearn eval   out/course.json            # the scorecard
-    vectorlearn show   quicksort-partition        # read a node as a learner would
+    vectorlearn models                            # what this machine has pulled
+    vectorlearn qualify --all                     # which of them can drive the pipeline
+    vectorlearn parse   book.epub                 # pass A only — no model at all
+    vectorlearn plan    book.epub --chapter 7     # the shape of a run
+    vectorlearn build   book.epub --chapter 7     # passes A–E -> out/
+    vectorlearn eval    out/course.json           # the scorecard
+    vectorlearn show    quicksort-partition       # read a node as a learner would
     vectorlearn schema                            # dump the IR JSON Schema
+
+`qualify` needs no book and no network: it runs the real passes against a
+sample chapter that ships with the package, so the first question — which
+local model is worth a Phase 0 run — can be answered before anything else.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import sys
 from pathlib import Path
 
 from .evals import measure_coverage, measure_fidelity, render_report
+from .llm import DEFAULT_HOST
 from .ir import Course, SourceDoc
 from .parse import mine_xrefs, parse_epub
 from .parse.xrefs import xref_stats
@@ -25,38 +32,65 @@ from .passes.pipeline import plan_cost, select_chapter
 OUT = Path("out")
 
 
-CREDENTIAL_HELP = """\
-No Anthropic credentials found.
+OLLAMA_HELP = """\
+Cannot reach Ollama.
 
-Passes A and C's cross-reference mining are deterministic and need no key:
+    ollama serve                 # start it
+    ollama pull qwen2.5:14b      # or whatever your machine runs
+    vectorlearn models           # confirm what is installed
+
+Pass A needs no model at all:
 
     vectorlearn parse book.epub --chapter 7
-    vectorlearn plan  book.epub --chapter 7
-
-Passes B, D and E, and the fidelity judge, call a model. Set one of:
-
-    export ANTHROPIC_API_KEY=sk-ant-...
-    ant auth login                     # stores a profile the SDK reads
 """
 
 
-class CredentialError(RuntimeError):
+class ProviderError(RuntimeError):
     pass
 
 
-def _provider(args):
-    from .llm import AnthropicProvider
+def _resolve_model(args) -> str:
+    """Use the requested model, else the largest one this machine has."""
+    from .llm import installed_models
 
-    models = {}
     if getattr(args, "model", None):
-        models = {"bulk": args.model, "reason": args.model}
+        return args.model
+
+    found = installed_models(getattr(args, "host", None) or DEFAULT_HOST)
+    if not found:
+        raise ProviderError("no models installed — try `ollama pull qwen2.5:14b`")
+    chosen = found[0]["name"]
+    print(f"[no --model given; using largest installed: {chosen} "
+          f"({chosen and found[0]['param_size']}, {found[0]['gib']} GiB)]\n",
+          file=sys.stderr)
+    return chosen
+
+
+def _provider(args):
+    """Build the provider. Local by default; Anthropic only on request."""
+    from .llm import AnthropicProvider, OllamaProvider, OllamaUnavailable
+
+    cache_dir = None if getattr(args, "no_cache", False) else ".vlcache"
+
+    if getattr(args, "provider", "ollama") == "anthropic":
+        try:
+            m = getattr(args, "model", None)
+            return AnthropicProvider(
+                cache_dir=cache_dir,
+                models={"bulk": m, "reason": m} if m else None,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"anthropic: {exc}") from exc
+
     try:
-        return AnthropicProvider(
-            cache_dir=None if getattr(args, "no_cache", False) else ".vlcache",
-            models=models or None,
+        reason = _resolve_model(args)
+        return OllamaProvider(
+            models={"reason": reason, "bulk": getattr(args, "bulk_model", None) or reason},
+            host=getattr(args, "host", None) or DEFAULT_HOST,
+            cache_dir=cache_dir,
         )
-    except (TypeError, ValueError) as exc:  # SDK raises TypeError on unresolved auth
-        raise CredentialError(str(exc)) from exc
+    except OllamaUnavailable as exc:
+        raise ProviderError(str(exc)) from exc
 
 
 def cmd_parse(args) -> int:
@@ -226,6 +260,65 @@ def cmd_show(args) -> int:
     return 0
 
 
+def cmd_models(args) -> int:
+    from .llm import OllamaUnavailable, installed_models
+
+    try:
+        found = installed_models(args.host or DEFAULT_HOST)
+    except OllamaUnavailable as exc:
+        raise ProviderError(str(exc)) from exc
+
+    if not found:
+        print("no models installed — try `ollama pull qwen2.5:14b`")
+        return 1
+
+    print(f"{'MODEL':<34} {'PARAMS':>8} {'QUANT':>10} {'SIZE':>8}")
+    print(f"{'-' * 34} {'-' * 8} {'-' * 10} {'-' * 8}")
+    for m in found:
+        print(f"{m['name'][:34]:<34} {m['param_size']:>8} {m['quant']:>10} {m['gib']:>6} GiB")
+    print("\nLargest first. Qualify them with:  vectorlearn qualify --all")
+    return 0
+
+
+def cmd_qualify(args) -> int:
+    from .llm import OllamaUnavailable, installed_models
+    from .qualify import qualify_model, render_qualification
+
+    host = args.host or DEFAULT_HOST
+    try:
+        if args.all:
+            targets = [m["name"] for m in installed_models(host)]
+            if args.limit:
+                targets = targets[: args.limit]
+        elif args.model:
+            targets = [args.model]
+        else:
+            targets = [_resolve_model(args)]
+    except OllamaUnavailable as exc:
+        raise ProviderError(str(exc)) from exc
+
+    if not targets:
+        print("no models to qualify — try `ollama pull qwen2.5:14b`", file=sys.stderr)
+        return 1
+
+    results = []
+    for name in targets:
+        print(f"qualifying {name} …", file=sys.stderr, flush=True)
+        try:
+            results.append(qualify_model(name, host=host, cache=args.cache))
+        except OllamaUnavailable as exc:
+            raise ProviderError(str(exc)) from exc
+
+    order = {"gold": 0, "silver": 1, "bronze": 2, "unqualified": 3}
+    results.sort(key=lambda q: (order[q.grade], -q.tokens_per_second))
+
+    report = render_qualification(results)
+    print(report)
+    OUT.mkdir(exist_ok=True)
+    (OUT / "qualification.txt").write_text(report)
+    return 0 if results and results[0].grade in ("gold", "silver") else 1
+
+
 def cmd_schema(args) -> int:
     print(json.dumps(Course.model_json_schema(), indent=2))
     return 0
@@ -240,6 +333,13 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--chapter", help="doc id substring or section prefix, e.g. 7")
         sp.add_argument("--max-nodes", type=int, help="cap nodes taken through D/E")
         sp.add_argument("--skip-lessons", action="store_true", help="passes A–C only")
+
+    def model_opts(sp):
+        sp.add_argument("--model", help="ollama model; defaults to the largest installed")
+        sp.add_argument("--bulk-model", help="cheaper model for span classification")
+        sp.add_argument("--host", help=f"ollama host (default {DEFAULT_HOST})")
+        sp.add_argument("--provider", choices=["ollama", "anthropic"], default="ollama")
+        sp.add_argument("--no-cache", action="store_true")
 
     sp = sub.add_parser("parse", help="pass A only (no model calls)")
     sp.add_argument("book")
@@ -258,16 +358,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--eval", action="store_true", help="run the scorecard afterwards")
     sp.add_argument("--no-classify", action="store_true")
     sp.add_argument("--no-fidelity", action="store_true")
-    sp.add_argument("--no-cache", action="store_true")
-    sp.add_argument("--model", help="run every tier on one model (BYOK rehearsal)")
+    model_opts(sp)
     sp.set_defaults(fn=cmd_build)
 
     sp = sub.add_parser("eval", help="score a built course")
     sp.add_argument("course", nargs="?", default="out/course.json")
     sp.add_argument("--max-nodes", type=int)
     sp.add_argument("--no-fidelity", action="store_true")
-    sp.add_argument("--no-cache", action="store_true")
-    sp.add_argument("--model")
+    model_opts(sp)
     sp.set_defaults(fn=cmd_eval)
 
     sp = sub.add_parser("show", help="read one node the way a learner would")
@@ -276,21 +374,29 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--sources", action="store_true", help="print the cited spans too")
     sp.set_defaults(fn=cmd_show)
 
+    sp = sub.add_parser("models", help="list models installed on this machine")
+    sp.add_argument("--host")
+    sp.set_defaults(fn=cmd_models)
+
+    sp = sub.add_parser("qualify", help="benchmark local models against the pipeline")
+    sp.add_argument("--model", help="one model to test")
+    sp.add_argument("--all", action="store_true", help="test every installed model")
+    sp.add_argument("--limit", type=int, help="with --all, test only the N largest")
+    sp.add_argument("--host")
+    sp.add_argument("--cache", action="store_true", help="reuse cached runs (skews timings)")
+    sp.set_defaults(fn=cmd_qualify)
+
     sp = sub.add_parser("schema", help="dump the course JSON Schema")
     sp.set_defaults(fn=cmd_schema)
 
     args = p.parse_args(argv)
     try:
         return args.fn(args)
-    except CredentialError:
-        print(CREDENTIAL_HELP, file=sys.stderr)
+    except ProviderError as exc:
+        print(f"{exc}\n", file=sys.stderr)
+        if "ollama" in str(exc).lower() or "model" in str(exc).lower():
+            print(OLLAMA_HELP, file=sys.stderr)
         return 3
-    except Exception as exc:  # noqa: BLE001 - the CLI is the last line of defence
-        cause = str(exc)
-        if "authentication" in cause.lower() or "api_key" in cause:
-            print(CREDENTIAL_HELP, file=sys.stderr)
-            return 3
-        raise
 
 
 if __name__ == "__main__":

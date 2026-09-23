@@ -1,7 +1,7 @@
 from vectorlearn.parse import mine_xrefs, parse_epub
 from vectorlearn.parse.xrefs import xref_stats
 
-from .fixture import build
+from vectorlearn.fixtures import build_sample_epub as build
 
 
 def _xrefs(tmp_path):

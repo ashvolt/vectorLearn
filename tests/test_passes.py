@@ -22,7 +22,7 @@ from vectorlearn.llm import Task
 from vectorlearn.parse import parse_epub
 from vectorlearn.passes import lessons, nodes as nodes_pass, spans as spans_pass
 
-from .fixture import build
+from vectorlearn.fixtures import build_sample_epub as build
 
 
 class StubProvider:

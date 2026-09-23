@@ -6,7 +6,7 @@ from vectorlearn.ir import Course, Edge, Node, Step
 from vectorlearn.parse import mine_xrefs, parse_epub
 from vectorlearn.passes.pipeline import select_chapter
 
-from .fixture import build
+from vectorlearn.fixtures import build_sample_epub as build
 
 
 @pytest.fixture(scope="module")
