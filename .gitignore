@@ -7,5 +7,6 @@ __pycache__/
 # Pipeline artifacts
 .vlcache/
 out/
+# Keep the folder in the repo, never the books themselves
 books/*
-!books/.gitkeep   # keep the folder, never the books
+!books/.gitkeep
