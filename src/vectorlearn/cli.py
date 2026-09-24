@@ -222,8 +222,45 @@ def cmd_eval(args) -> int:
     return _run_eval(course, doc, provider, args)
 
 
+def cmd_nodes(args) -> int:
+    """The objectives, which is what pass B is judged on."""
+    course, _ = _load(Path(args.course))
+    levels = course.topological_levels()
+    depth_of = {nid: i for i, layer in enumerate(levels) for nid in layer}
+
+    print(f"{course.title} — {len(course.nodes)} nodes, {len(course.edges)} edges, "
+          f"{len(levels)} levels\n")
+    for node in sorted(course.nodes, key=lambda n: (depth_of.get(n.node_id, 0), n.node_id)):
+        lvl = depth_of.get(node.node_id, 0)
+        print(f"  L{lvl}  {node.node_id}")
+        print(f"      {node.objective}")
+        bits = [f"{len(node.source_spans)} spans"]
+        if node.steps:
+            bits.append(f"{len(node.steps)} steps")
+            bits.append(f"{len(node.checks)} checks")
+            bits.append(f"~{node.est_seconds // 60} min")
+        else:
+            bits.append("no lesson yet")
+        if node.environment.kind != "none":
+            bits.append(node.environment.kind)
+        if node.prereqs:
+            bits.append("after " + ", ".join(node.prereqs))
+        print(f"      {' · '.join(bits)}\n")
+
+    if course.edges:
+        print("edges:")
+        for e in course.edges:
+            mark = "author" if e.origin == "xref" else f"inferred {e.confidence:.0%}"
+            print(f"  {e.src} -> {e.dst}   ({mark})")
+    else:
+        print("no edges — every node is an entry point, which is rarely true")
+    return 0
+
+
 def cmd_show(args) -> int:
     course, doc = _load(Path(args.course))
+    if not args.node_id:
+        return cmd_nodes(args)
     node = course.node_index().get(args.node_id)
     if not node:
         print("known nodes:", ", ".join(n.node_id for n in course.nodes), file=sys.stderr)
@@ -418,8 +455,12 @@ def main(argv: list[str] | None = None) -> int:
     model_opts(sp)
     sp.set_defaults(fn=cmd_eval)
 
+    sp = sub.add_parser("nodes", help="list the objectives and the graph")
+    sp.add_argument("--course", default="out/course.json")
+    sp.set_defaults(fn=cmd_nodes)
+
     sp = sub.add_parser("show", help="read one node the way a learner would")
-    sp.add_argument("node_id")
+    sp.add_argument("node_id", nargs="?", help="omit to list them")
     sp.add_argument("--course", default="out/course.json")
     sp.add_argument("--sources", action="store_true", help="print the cited spans too")
     sp.set_defaults(fn=cmd_show)

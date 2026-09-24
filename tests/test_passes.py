@@ -227,3 +227,48 @@ def test_report_flags_a_node_that_cannot_gate(doc):
     course.nodes[0].checks = []
     text = render_report(course, doc, measure_coverage(course, doc.spans), None, [])
     assert "[FAIL] every node can gate" in text
+
+
+# --- the nodes listing ------------------------------------------------------
+
+def test_nodes_listing_groups_by_graph_depth(doc, tmp_path, capsys, monkeypatch):
+    """`nodes` is the view pass B is judged on, so it has to show the
+    objectives and the dependency layering, not just ids."""
+    from vectorlearn.cli import main
+    from vectorlearn.ir import Course, Edge
+
+    a = _node(doc)
+    b = Node(node_id="bellman", title="B", objective="Derive the Bellman equation",
+             zone="Z", source_spans=a.source_spans, prereqs=["partition"])
+    course = Course(course_id="c", title="T", source_hash=doc.source_hash,
+                    nodes=[a, b],
+                    edges=[Edge(src="partition", dst="bellman", origin="xref")])
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "course.json").write_text(course.model_dump_json(), encoding="utf-8")
+    (out / "source.json").write_text(doc.model_dump_json(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["nodes"]) == 0
+    text = capsys.readouterr().out
+    assert "Derive the Bellman equation" in text
+    assert "L0  partition" in text and "L1  bellman" in text
+    assert "after partition" in text
+    assert "author" in text, "an author-declared edge should be marked as such"
+
+
+def test_show_with_no_node_id_lists_them(doc, tmp_path, capsys, monkeypatch):
+    from vectorlearn.cli import main
+    from vectorlearn.ir import Course
+
+    course = Course(course_id="c", title="T", source_hash=doc.source_hash,
+                    nodes=[_node(doc)])
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "course.json").write_text(course.model_dump_json(), encoding="utf-8")
+    (out / "source.json").write_text(doc.model_dump_json(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["show"]) == 0
+    assert "partition" in capsys.readouterr().out
