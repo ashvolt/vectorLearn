@@ -335,3 +335,27 @@ def test_a_contradiction_fails_the_gate_at_any_sample_size(doc):
                          _scored(doc, total=8, supported=7, contradicted=1), [])
     assert "[FAIL] no contradicted claims" in text
     assert "GATE FAILED" in text
+
+
+def test_show_explains_a_node_with_no_lesson(doc, tmp_path, capsys, monkeypatch):
+    """A --max-nodes cap leaves most nodes ungenerated. Printing a bare
+    heading and "GATE — 0 checks" made those look broken rather than pending."""
+    from vectorlearn.cli import main
+    from vectorlearn.ir import Course
+
+    done = _built_course(doc).nodes[0]
+    pending = Node(node_id="softmax", title="Softmax", objective="Normalise outputs",
+                   zone="Z", source_spans=done.source_spans)
+    course = Course(course_id="c", title="T", source_hash=doc.source_hash,
+                    nodes=[done, pending])
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "course.json").write_text(course.model_dump_json(), encoding="utf-8")
+    (out / "source.json").write_text(doc.model_dump_json(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["show", "softmax"]) == 0
+    text = capsys.readouterr().out
+    assert "no lesson yet" in text
+    assert "vectorlearn show n --sources" in text, "should point at one that has one"

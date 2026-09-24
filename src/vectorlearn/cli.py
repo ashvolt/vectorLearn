@@ -278,6 +278,18 @@ def cmd_show(args) -> int:
     print(f"env       : {node.environment.kind}")
     print(f"time      : ~{node.est_seconds // 60} min across {len(node.steps)} steps\n")
 
+    if not node.steps:
+        built = [n.node_id for n in course.nodes if n.steps]
+        print("This node has no lesson yet — passes D and E have not run on it.")
+        print("Lessons are generated lazily, and a --max-nodes cap stops early.\n")
+        if built:
+            print("Nodes that do have one:")
+            for nid in built:
+                print(f"  vectorlearn show {nid} --sources")
+        print("\nOr drop the cap to generate the rest:")
+        print("  vectorlearn build <book> --chapter <n> --eval")
+        return 0
+
     for i, s in enumerate(node.steps, 1):
         print(f"{'─' * 68}\nSTEP {i}/{len(node.steps)}  [{s.type}]  {s.title}"
               f"   ({s.est_seconds}s)")
