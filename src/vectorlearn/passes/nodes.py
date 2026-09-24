@@ -8,6 +8,8 @@ contents and start naming what someone has to be able to *do*.
 
 from __future__ import annotations
 
+import re
+
 from ..ir import Node, NodePlan, Span
 from ..llm import Provider, Task
 from .common import GROUNDING_RULE, render_spans, validate_citations
@@ -48,8 +50,30 @@ Rules for the node set you produce:
 """
 
 
-SPANS_PER_NODE = 14
+SPANS_PER_NODE = 20
 MIN_NODES, MAX_NODES = 4, 14
+
+# Chapter furniture. These are headings, but none of them is a topic a
+# learner is meant to come away able to do, so counting them inflates the
+# target and makes a sound decomposition look like a failure.
+BOILERPLATE_HEADING = re.compile(
+    r"^\s*(summary|questions?|further reading|references|bibliography|"
+    r"technical requirements|introduction|conclusion|what (this|we) "
+    r"(book )?covers?|in this chapter|exercises?|answers?|index|"
+    r"acknowledge?ments?)\b",
+    re.I,
+)
+
+
+def teachable_headings(spans: list[Span]) -> list[str]:
+    """Section titles that name something a learner should be able to do."""
+    chapter = next((s.chapter for s in spans if s.chapter), None)
+    return [
+        s.text for s in spans
+        if s.kind == "heading"
+        and s.text != chapter                    # the chapter's own title
+        and not BOILERPLATE_HEADING.match(s.text)
+    ]
 
 
 def target_node_count(spans: list[Span]) -> int:
@@ -57,11 +81,13 @@ def target_node_count(spans: list[Span]) -> int:
 
     A fixed range invites a model to produce the minimum regardless of how
     much it was given — which is how a 197-span chapter came back as four
-    nodes covering half of it.
+    nodes covering half of it. The heading count is a second opinion rather
+    than the answer, and is discounted because sub-headings are often folded
+    into their parent quite legitimately.
     """
     substantive = [s for s in spans if s.kind != "heading" and s.word_count > 3]
-    headings = sum(1 for s in spans if s.kind == "heading")
-    estimate = max(len(substantive) // SPANS_PER_NODE, headings - 2)
+    headings = teachable_headings(spans)
+    estimate = max(len(substantive) // SPANS_PER_NODE, round(len(headings) * 0.8))
     return max(MIN_NODES, min(MAX_NODES, estimate))
 
 
@@ -72,7 +98,7 @@ def plan_nodes(
     teachable = [s for s in spans if s.teachable]
     allowed = {s.span_id for s in teachable}
     target = target_node_count(teachable)
-    headings = [s.text for s in teachable if s.kind == "heading"]
+    headings = teachable_headings(teachable)
 
     task = Task(
         name="plan_nodes",
@@ -123,7 +149,7 @@ def plan_nodes(
             )
         )
 
-    if nodes and len(nodes) < target * 0.6:
+    if nodes and len(nodes) < target * 0.55:
         warnings.append(
             f"produced {len(nodes)} nodes against a target of {target}: much of "
             "the chapter will have no lesson"

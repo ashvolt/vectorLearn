@@ -212,3 +212,26 @@ def test_node_target_scales_with_the_material(tmp_path):
     assert small == MIN_NODES, "a handful of spans cannot support more"
     assert large > small
     assert large <= MAX_NODES
+
+
+def test_chapter_furniture_does_not_inflate_the_node_target():
+    """Summary, Questions and Further reading are headings but not topics.
+    Counting them made a sound seven-node decomposition look like a failure
+    against a target of thirteen."""
+    from vectorlearn.ir import Span
+    from vectorlearn.passes.nodes import teachable_headings
+
+    def heading(text):
+        return Span(span_id=f"d:{text}", doc_id="d", ordinal=0, kind="heading",
+                    text=text, chapter="Think like a Machine")
+
+    spans = [
+        heading("Think like a Machine"),      # the chapter's own title
+        heading("Technical requirements"),
+        heading("The McCulloch-Pitts neuron"),
+        heading("Softmax"),
+        heading("Summary"),
+        heading("Questions"),
+        heading("Further reading"),
+    ]
+    assert teachable_headings(spans) == ["The McCulloch-Pitts neuron", "Softmax"]
