@@ -22,6 +22,8 @@ fails silently rather than loudly:
 from __future__ import annotations
 
 import json
+import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -35,6 +37,16 @@ from .client import MAX_REPAIRS, Task, TaskError, Tier, _Cache
 
 DEFAULT_HOST = "http://localhost:11434"
 
+# Generous on purpose. A CPU-only machine spends minutes on prompt evaluation
+# before the first token appears, and a chapter-sized prompt at a few tokens a
+# second can run past any timeout picked for a GPU.
+DEFAULT_TIMEOUT = 3600.0
+
+# Ollama unloads an idle model after five minutes by default. Between two slow
+# calls that means reloading several gigabytes from disk, which shows up as a
+# pause nobody can account for.
+KEEP_ALIVE = "30m"
+
 # Structure passes want near-determinism; lesson prose is allowed a little room.
 TEMPERATURE: dict[Tier, float] = {"bulk": 0.0, "reason": 0.3}
 
@@ -47,6 +59,25 @@ CTX_HEADROOM_TOKENS = 3000
 
 class OllamaUnavailable(RuntimeError):
     """Ollama is not reachable, or the model is not pulled."""
+
+
+class OllamaTimeout(OllamaUnavailable):
+    """The model did not finish within the allotted time."""
+
+
+def _timeout_help(payload: dict[str, Any], timeout: float) -> str:
+    ctx = (payload.get("options") or {}).get("num_ctx", "?")
+    return (
+        f"{payload.get('model')} did not respond within {timeout / 60:.0f} minutes "
+        f"(context {ctx}).\n\n"
+        "This is usually slowness, not a hang: a CPU-only machine spends several "
+        "minutes evaluating a chapter-sized prompt before the first token appears.\n\n"
+        "  --timeout 7200        allow two hours per call\n"
+        "  --max-nodes 2         generate fewer lessons\n"
+        "  --chapter <smaller>   pick a shorter chapter\n\n"
+        "If `ollama ps` shows 100% CPU and you have a GPU, fixing that is worth "
+        "more than any of the above."
+    )
 
 
 def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
@@ -95,9 +126,13 @@ def _post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
             ) from exc
         raise OllamaUnavailable(f"ollama returned {exc.code}: {body}") from exc
     except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise OllamaTimeout(_timeout_help(payload, timeout)) from exc
         raise OllamaUnavailable(
             f"cannot reach ollama at {url} — is `ollama serve` running? ({exc.reason})"
         ) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise OllamaTimeout(_timeout_help(payload, timeout)) from exc
 
 
 @dataclass
@@ -127,8 +162,9 @@ class OllamaProvider:
         models: dict[Tier, str] | None = None,
         host: str = DEFAULT_HOST,
         cache_dir: str | Path | None = ".vlcache",
-        timeout: float = 900.0,
+        timeout: float = DEFAULT_TIMEOUT,
         record: bool = False,
+        progress: bool = True,
     ) -> None:
         if not models or "reason" not in models:
             raise ValueError("OllamaProvider needs at least a 'reason' model")
@@ -141,8 +177,9 @@ class OllamaProvider:
         self.timeout = timeout
         self.calls = 0
         self.cache_hits = 0
-        self.stats: list[CallStat] = [] if record else []
+        self.stats: list[CallStat] = []
         self._record = record
+        self._progress = progress
 
     # -- Provider protocol --------------------------------------------------
 
@@ -191,11 +228,13 @@ class OllamaProvider:
                 "messages": messages,
                 "stream": False,
                 "format": schema,
+                "keep_alive": KEEP_ALIVE,
                 "options": {
                     "temperature": TEMPERATURE[task.tier],
                     "num_ctx": num_ctx,
                 },
             }
+            self._announce(task, model, num_ctx, attempt)
             data = _post(f"{self.host}/api/chat", payload, self.timeout)
             stat.prompt_tokens = data.get("prompt_eval_count", stat.prompt_tokens)
             stat.output_tokens += data.get("eval_count", 0)
@@ -234,9 +273,24 @@ class OllamaProvider:
         need = len(prompt) // 4 + CTX_HEADROOM_TOKENS
         return max(CTX_FLOOR, min(CTX_CEILING, 1 << (need - 1).bit_length()))
 
+    def _announce(self, task: Task, model: str, num_ctx: int, attempt: int) -> None:
+        """Say what is starting. On a slow machine a silent minute is
+        indistinguishable from a hang, and these calls run for many."""
+        if not self._progress:
+            return
+        what = task.meta.get("node_id") or task.meta.get("batch")
+        label = f"{task.name}" + (f" [{what}]" if what is not None else "")
+        retry = f" (repair {attempt})" if attempt else ""
+        print(f"  · {label}{retry} — {model}, ctx {num_ctx} …",
+              file=sys.stderr, flush=True)
+
     def _log(self, stat: CallStat) -> None:
-        if self._record:
-            self.stats.append(stat)
+        self.stats.append(stat)
+        if self._progress and stat.seconds:
+            rate = f"{stat.tokens_per_second:.1f} tok/s" if stat.output_tokens else ""
+            status = "ok" if stat.ok else "FAILED"
+            print(f"    {status} in {stat.seconds:.0f}s  {stat.output_tokens} tok  {rate}",
+                  file=sys.stderr, flush=True)
 
 
 # -- discovery ---------------------------------------------------------------

@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from .evals import measure_coverage, measure_fidelity, render_report
-from .llm import DEFAULT_HOST
+from .llm import DEFAULT_HOST, DEFAULT_TIMEOUT
 from .ir import Course, SourceDoc
 from .parse import mine_xrefs, parse_epub
 from .parse.xrefs import xref_stats
@@ -88,6 +88,7 @@ def _provider(args):
             models={"reason": reason, "bulk": getattr(args, "bulk_model", None) or reason},
             host=getattr(args, "host", None) or DEFAULT_HOST,
             cache_dir=cache_dir,
+            timeout=getattr(args, "timeout", None) or DEFAULT_TIMEOUT,
         )
     except OllamaUnavailable as exc:
         raise ProviderError(str(exc)) from exc
@@ -368,6 +369,8 @@ def _force_utf8_console() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .llm import OllamaTimeout, OllamaUnavailable
+
     _force_utf8_console()
     p = argparse.ArgumentParser(prog="vectorlearn", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -382,6 +385,9 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--model", help="ollama model; defaults to the largest installed")
         sp.add_argument("--bulk-model", help="cheaper model for span classification")
         sp.add_argument("--host", help=f"ollama host (default {DEFAULT_HOST})")
+        sp.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help=f"per-call limit (default {DEFAULT_TIMEOUT:.0f}s); "
+                             "raise it on a slow CPU-only machine")
         sp.add_argument("--provider", choices=["ollama", "anthropic"], default="ollama")
         sp.add_argument("--no-cache", action="store_true")
 
@@ -444,6 +450,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{exc}\n", file=sys.stderr)
         if "ollama" in str(exc).lower() or "model" in str(exc).lower():
             print(OLLAMA_HELP, file=sys.stderr)
+        return 3
+    except OllamaTimeout as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 4
+    except OllamaUnavailable as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        print(OLLAMA_HELP, file=sys.stderr)
         return 3
 
 

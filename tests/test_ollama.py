@@ -270,3 +270,76 @@ def test_all_file_io_declares_utf8():
             if re.search(r"\.(read|write)_text\(", line) and "encoding=" not in line:
                 offenders.append(f"{path.relative_to(root)}:{i}")
     assert not offenders, "text IO without an explicit encoding: " + ", ".join(offenders)
+
+
+# --- slow-machine behaviour -------------------------------------------------
+
+class _SlowStub(_Stub):
+    """Accepts the request, then never answers — a model still thinking."""
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(n)
+        import time as _t
+        _t.sleep(5)
+
+
+@pytest.fixture
+def slow_stub():
+    server = HTTPServer(("127.0.0.1", 0), _SlowStub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}"
+    server.shutdown()
+
+
+def test_a_slow_model_reports_slowness_not_a_crash(slow_stub):
+    """A timeout on a CPU-only machine is the expected case, not an error to
+    surface as a traceback: it has to say what to do about it."""
+    from vectorlearn.llm.ollama import OllamaTimeout
+
+    p = OllamaProvider(models={"reason": "big:70b"}, host=slow_stub,
+                       cache_dir=None, timeout=0.4, progress=False)
+    with pytest.raises(OllamaTimeout) as exc:
+        p.run(_task())
+
+    msg = str(exc.value)
+    assert "big:70b" in msg
+    assert "--timeout" in msg and "--max-nodes" in msg
+    assert "slowness, not a hang" in msg
+
+
+def test_timeout_is_not_retried_as_a_schema_failure(slow_stub):
+    """Repairs are for bad output. Re-sending a prompt that already ran out of
+    time just triples the wait."""
+    from vectorlearn.llm.ollama import OllamaTimeout
+
+    p = OllamaProvider(models={"reason": "m"}, host=slow_stub, cache_dir=None,
+                       timeout=0.4, progress=False)
+    with pytest.raises(OllamaTimeout):
+        p.run(_task())
+    assert p.calls == 1
+
+
+def test_model_is_kept_loaded_between_calls(stub):
+    """Ollama unloads an idle model after five minutes; between two slow calls
+    that is a multi-gigabyte reload the user cannot account for."""
+    host, S = stub
+    S.replies = [VALID]
+    _provider(host, progress=False).run(_task())
+    assert S.received[0]["keep_alive"]
+
+
+def test_progress_is_reported_to_stderr(stub, capsys):
+    host, S = stub
+    S.replies = [VALID]
+    OllamaProvider(models={"reason": "m"}, host=host, cache_dir=None,
+                   progress=True).run(_task())
+    err = capsys.readouterr().err
+    assert "t" in err and "ok in" in err
+
+
+def test_progress_can_be_silenced(stub, capsys):
+    host, S = stub
+    S.replies = [VALID]
+    _provider(host, progress=False).run(_task())
+    assert capsys.readouterr().err == ""

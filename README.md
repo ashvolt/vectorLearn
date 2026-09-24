@@ -140,6 +140,24 @@ vectorlearn show  quicksort-partition --sources
 number like `7.2` — books number their sections or title them, and converted
 ones usually only have titles.
 
+### On a slow machine
+
+Local inference on CPU runs at a few tokens a second, and a chapter-sized
+prompt spends minutes in evaluation before the first token appears. Each call
+reports what it is doing and how long it took, so a long wait is legible
+rather than indistinguishable from a hang. The per-call limit defaults to an
+hour; `--timeout 7200` raises it, and a timeout says so plainly instead of
+raising a traceback.
+
+Work in stages rather than one long run — everything is cached, so each stage
+pays only for what the previous one did not do:
+
+```bash
+vectorlearn build book.epub --chapter 8 --skip-lessons --no-classify  # the map
+vectorlearn build book.epub --chapter 8 --max-nodes 2 --eval          # two lessons
+vectorlearn build book.epub --chapter 8 --eval                        # everything
+```
+
 Omit `--model` and the largest installed model is used. `build` writes
 `out/course.json`, `out/source.json` and `out/build_warnings.txt`; `--eval`
 appends the scorecard.
