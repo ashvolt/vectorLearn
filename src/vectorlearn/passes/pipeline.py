@@ -131,7 +131,7 @@ def build_course(
     )
     report.warnings.extend(warns)
 
-    inferred, warns = edges_pass.drop_backward_edges(inferred, positions)
+    inferred, warns = edges_pass.fix_backward_edges(inferred, positions)
     report.warnings.extend(warns)
     report.edges_inferred = len(inferred)
 
@@ -170,6 +170,7 @@ def build_course(
         zones=sorted({n.zone for n in course_nodes}),
         nodes=course_nodes,
         edges=all_edges,
+        scope_spans=[sp.span_id for sp in selected],
     )
 
     report.provider_calls = getattr(provider, "calls", 0)

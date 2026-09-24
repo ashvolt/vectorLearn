@@ -194,8 +194,12 @@ def _load(path: Path) -> tuple[Course, SourceDoc]:
 
 
 def _run_eval(course: Course, doc: SourceDoc, provider, args) -> int:
-    cited_docs = {sid.split(":")[0] for sid in course.cited_spans()}
-    scope = [s for s in doc.spans if s.doc_id in cited_docs] or doc.spans
+    if course.scope_spans:
+        wanted = set(course.scope_spans)
+        scope = [s for s in doc.spans if s.span_id in wanted]
+    else:  # courses built before the scope was recorded
+        cited_docs = {sid.split(":")[0] for sid in course.cited_spans()}
+        scope = [s for s in doc.spans if s.doc_id in cited_docs] or doc.spans
 
     coverage = measure_coverage(course, scope)
     fidelity = None

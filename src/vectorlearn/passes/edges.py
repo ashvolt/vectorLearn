@@ -69,27 +69,45 @@ def node_positions(
     return out
 
 
-def drop_backward_edges(
+def fix_backward_edges(
     edges: list[Edge], positions: dict[str, float]
 ) -> tuple[list[Edge], list[str]]:
-    """Remove inferred edges that contradict the order the book teaches in.
+    """Turn inferred edges that contradict the book's order around.
 
-    Author-declared edges are exempt: a cross-reference is explicit about its
-    direction, and forward references ("as we will see") are already filtered
-    out upstream.
+    Dropping them was the first attempt, and on a real chapter it deleted the
+    entire graph: the model had identified the right *pairs* and got every
+    direction wrong. Those are two separable judgements, and it is much
+    better at the first than the second — so keep the pair and take the
+    direction from the author, who taught one before the other.
+
+    Confidence is reduced, because a pair the model mis-ordered is a pair it
+    was less sure of than it claimed. Author-declared edges are exempt: a
+    cross-reference states its own direction.
     """
-    kept: list[Edge] = []
+    fixed: list[Edge] = []
     warnings: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
     for e in edges:
         src, dst = positions.get(e.src), positions.get(e.dst)
-        if e.origin != "xref" and src is not None and dst is not None and src > dst:
-            warnings.append(
-                f"dropped {e.src} -> {e.dst}: the book teaches {e.dst} first, "
-                f"so the dependency cannot run this way"
+        backward = (
+            e.origin != "xref" and src is not None and dst is not None and src > dst
+        )
+        if backward:
+            e = Edge(
+                src=e.dst, dst=e.src, origin="inferred",
+                confidence=round(e.confidence * 0.7, 2),
+                evidence=f"direction taken from book order; {e.evidence or ''}"[:200],
             )
+            warnings.append(
+                f"reversed to {e.src} -> {e.dst}: the book teaches {e.src} first"
+            )
+        pair = (e.src, e.dst)
+        if e.src == e.dst or pair in seen:
             continue
-        kept.append(e)
-    return kept, warnings
+        seen.add(pair)
+        fixed.append(e)
+    return fixed, warnings
 
 
 def _section_owner(nodes: list[Node], spans_by_id: dict[str, Span]) -> dict[str, str]:

@@ -199,6 +199,11 @@ class Course(BaseModel):
     nodes: list[Node] = Field(default_factory=list)
     edges: list[Edge] = Field(default_factory=list)
 
+    # The spans this build was asked to cover. Coverage is meaningless without
+    # it: books pack several chapters into one content document, so scoping by
+    # document measures a one-chapter course against seven chapters of source.
+    scope_spans: list[str] = Field(default_factory=list)
+
     def node_index(self) -> dict[str, Node]:
         return {n.node_id: n for n in self.nodes}
 

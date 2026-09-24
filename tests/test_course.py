@@ -147,33 +147,50 @@ def _positioned(**pos):
     return dict(pos)
 
 
-def test_an_edge_against_book_order_is_rejected():
-    from vectorlearn.passes.edges import drop_backward_edges
+def test_an_edge_against_book_order_is_turned_around():
+    """The model identifies the right pairs and mis-orders them. Dropping such
+    an edge deleted the whole graph on a real chapter; reversing keeps the
+    pair and takes the direction from the author."""
+    from vectorlearn.passes.edges import fix_backward_edges
 
     edges = [Edge(src="softmax", dst="neuron", origin="inferred", confidence=1.0)]
     positions = {"neuron": 696.0, "softmax": 762.0}  # the book teaches neuron first
-    kept, warns = drop_backward_edges(edges, positions)
+    fixed, warns = fix_backward_edges(edges, positions)
 
-    assert kept == []
-    assert warns and "teaches neuron first" in warns[0]
+    assert len(fixed) == 1
+    assert (fixed[0].src, fixed[0].dst) == ("neuron", "softmax")
+    assert fixed[0].confidence < 1.0, "a mis-ordered pair was less certain than claimed"
+    assert warns and "reversed" in warns[0]
 
 
-def test_an_edge_following_book_order_is_kept():
-    from vectorlearn.passes.edges import drop_backward_edges
+def test_an_edge_following_book_order_is_untouched():
+    from vectorlearn.passes.edges import fix_backward_edges
 
     edges = [Edge(src="neuron", dst="softmax", origin="inferred", confidence=0.8)]
-    kept, warns = drop_backward_edges(edges, {"neuron": 696.0, "softmax": 762.0})
-    assert len(kept) == 1 and not warns
+    fixed, warns = fix_backward_edges(edges, {"neuron": 696.0, "softmax": 762.0})
+    assert fixed == edges and not warns
+
+
+def test_reversal_does_not_create_duplicates():
+    """Reversing one edge onto an existing pair must not double it."""
+    from vectorlearn.passes.edges import fix_backward_edges
+
+    edges = [
+        Edge(src="neuron", dst="softmax", origin="inferred", confidence=0.9),
+        Edge(src="softmax", dst="neuron", origin="inferred", confidence=0.6),
+    ]
+    fixed, _ = fix_backward_edges(edges, {"neuron": 696.0, "softmax": 762.0})
+    assert len(fixed) == 1
 
 
 def test_author_declared_edges_are_exempt_from_the_order_check():
     """A cross-reference states its own direction; the prior does not overrule
     the author."""
-    from vectorlearn.passes.edges import drop_backward_edges
+    from vectorlearn.passes.edges import fix_backward_edges
 
     edges = [Edge(src="later", dst="earlier", origin="xref", confidence=1.0)]
-    kept, _ = drop_backward_edges(edges, {"earlier": 10.0, "later": 90.0})
-    assert len(kept) == 1
+    fixed, _ = fix_backward_edges(edges, {"earlier": 10.0, "later": 90.0})
+    assert (fixed[0].src, fixed[0].dst) == ("later", "earlier")
 
 
 def test_positions_are_the_median_span_ordinal(tmp_path):
@@ -192,10 +209,10 @@ def test_positions_are_the_median_span_ordinal(tmp_path):
 
 def test_edges_without_positions_are_left_alone():
     """Missing evidence is not evidence of a problem."""
-    from vectorlearn.passes.edges import drop_backward_edges
+    from vectorlearn.passes.edges import fix_backward_edges
 
     edges = [Edge(src="a", dst="b", origin="inferred", confidence=0.5)]
-    kept, warns = drop_backward_edges(edges, {})
+    kept, warns = fix_backward_edges(edges, {})
     assert kept == edges and not warns
 
 
@@ -235,3 +252,26 @@ def test_chapter_furniture_does_not_inflate_the_node_target():
         heading("Further reading"),
     ]
     assert teachable_headings(spans) == ["The McCulloch-Pitts neuron", "Softmax"]
+
+
+
+# --- coverage scoping -------------------------------------------------------
+
+def test_coverage_is_scoped_to_the_chapter_that_was_built(tmp_path):
+    """Books pack several chapters into one content document. Scoping by
+    document measured a 197-span chapter against 1,361 spans and reported
+    13% coverage for a course that had covered everything it was given."""
+    from vectorlearn.parse import parse_epub
+
+    doc = parse_epub(build(tmp_path / "scope.epub"))
+    chapter = [s for s in doc.spans if (s.section or "").startswith("7")]
+    assert chapter and len(chapter) < len(doc.spans)
+
+    course = _course([_node("n", [s.span_id for s in chapter])], [])
+    course.scope_spans = [s.span_id for s in chapter]
+
+    scoped = measure_coverage(course, chapter)
+    whole_book = measure_coverage(course, doc.spans)
+
+    assert scoped.span_coverage == 1.0
+    assert whole_book.span_coverage < 1.0, "the wider scope is what produced 13%"
