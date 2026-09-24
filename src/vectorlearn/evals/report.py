@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..ir import Course, SourceDoc
 from .coverage import CoverageResult
 from .fidelity import FidelityResult
+from .teachability import TeachabilityResult, measure_teachability
 
 # Gate thresholds. Deliberately strict: the learner cannot audit this
 # material, so the pipeline has to.
@@ -35,6 +36,7 @@ def render_report(
     coverage: CoverageResult,
     fidelity: FidelityResult | None,
     build_warnings: list[str],
+    teachability: TeachabilityResult | None = None,
 ) -> str:
     L: list[str] = []
     add = L.append
@@ -104,6 +106,29 @@ def render_report(
                 add(f"    {mark} [{f.step_id}] {f.assertion[:88]}")
                 add(f"       {f.reasoning[:88]}")
 
+    # -- teachability ------------------------------------------------------
+    teach = teachability if teachability is not None else measure_teachability(course)
+    if teach.steps_checked:
+        rate = len(teach.findings) / teach.steps_checked
+        add("")
+        add("TEACHABILITY — is this a lesson, or annotated source code?")
+        add(f"  findings            {len(teach.findings)} across {teach.steps_checked} "
+            f"steps  ({rate:.2f} per step)")
+        if teach.clean:
+            add("  none — no duplicated steps, chopped reveals, hollow tests or")
+            add("  truncated text. This does not mean the prose is good.")
+        else:
+            counts = teach.by_kind()
+            add("  " + "   ".join(f"{k}:{v}" for k, v in sorted(counts.items())))
+            add("")
+            for f in teach.findings[:10]:
+                add(f"    !! [{f.where}] {f.detail}")
+            if len(teach.findings) > 10:
+                add(f"    … and {len(teach.findings) - 10} more")
+        add("")
+        add("  These are structural defects only, and they are advisory. No")
+        add("  automated check can tell you whether a lesson teaches — read one.")
+
     # -- build warnings ----------------------------------------------------
     if build_warnings:
         add("")
@@ -149,6 +174,13 @@ def render_report(
         not coverage.fabricated_citations,
         str(len(coverage.fabricated_citations)),
     ))
+    truncated = sum(1 for f in teach.findings if f.kind == "truncated")
+    if teach.steps_checked:
+        gates.append((
+            "no truncated content",
+            truncated == 0,
+            f"{truncated} cut off mid-statement",
+        ))
 
     for label, ok, detail in gates:
         mark = "PASS" if ok else ("FAIL" if ok is False else " ?? ")

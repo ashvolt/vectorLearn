@@ -21,7 +21,9 @@ import json
 import sys
 from pathlib import Path
 
-from .evals import measure_coverage, measure_fidelity, render_report
+from .evals import (
+    measure_coverage, measure_fidelity, measure_teachability, render_report,
+)
 from .llm import DEFAULT_HOST, DEFAULT_TIMEOUT
 from .ir import Course, SourceDoc
 from .parse import mine_xrefs, parse_epub
@@ -213,7 +215,8 @@ def _run_eval(course: Course, doc: SourceDoc, provider, args) -> int:
     if wpath.exists():
         warnings = [w for w in wpath.read_text(encoding="utf-8").splitlines() if w.strip()]
 
-    report = render_report(course, doc, coverage, fidelity, warnings)
+    report = render_report(course, doc, coverage, fidelity, warnings,
+                           measure_teachability(course))
     print(report)
     OUT.mkdir(exist_ok=True)
     (OUT / "scorecard.txt").write_text(report, encoding="utf-8")

@@ -206,6 +206,26 @@ that it was the model rather than the pipeline.
 
 `vectorlearn eval` exits non-zero when a gate fails.
 
+### Teachability
+
+A third eval, reported alongside the gates. Fidelity asks whether content is
+true to the book and coverage whether it accounts for the book; neither asks
+whether it *teaches*. The first real lesson this pipeline produced was
+faithful, complete, and close to useless — two steps saying the same thing, a
+"worked example" that split a config block across four lines, tests that
+could not run, and a reference answer cut off mid-token.
+
+Every check is deterministic, which is a deliberate limit. A model asked to
+rate teaching rates fluency, and a score tracking polish would be worse than
+none because it would be believed. These ask narrow falsifiable questions
+instead: is this step a copy of that one, do these reveal fragments trace
+anything, would this assertion execute, does this text stop mid-statement,
+is the time allowed shorter than the reading time.
+
+Findings are advisory — only truncated content gates, because it is
+unambiguous. The per-step findings rate is the number to compare when
+weighing one model against another.
+
 **If the gates fail, that is the finding.** No amount of map, streak or
 playground work rescues a course that teaches things the book never said.
 
