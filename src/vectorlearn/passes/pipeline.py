@@ -125,7 +125,13 @@ def build_course(
     xref_edges = edges_pass.edges_from_xrefs(course_nodes, spans_by_id, doc.xrefs)
     report.edges_xref = len(xref_edges)
 
-    inferred, warns = edges_pass.infer_edges(provider, course_nodes, xref_edges)
+    positions = edges_pass.node_positions(course_nodes, spans_by_id)
+    inferred, warns = edges_pass.infer_edges(
+        provider, course_nodes, xref_edges, positions
+    )
+    report.warnings.extend(warns)
+
+    inferred, warns = edges_pass.drop_backward_edges(inferred, positions)
     report.warnings.extend(warns)
     report.edges_inferred = len(inferred)
 

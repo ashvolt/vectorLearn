@@ -23,8 +23,13 @@ An objective is something a learner can DO, stated verb-first, and checkable:
   bad:  "Learn about heaps"        (not checkable)
 
 Rules for the node set you produce:
-  - 4 to 12 nodes per chapter. Fewer means each node is too big to finish in
-    one sitting; more means you are splitting on paragraphs, not on ideas.
+  - Produce close to the TARGET COUNT you are given. It is derived from how
+    much material there is. Coming in far under it means each node is too
+    big to finish in one sitting and most of the chapter goes untaught;
+    coming in far over means you are splitting on paragraphs, not on ideas.
+  - Every substantive heading in the supplied spans should be represented.
+    The headings are the author's own decomposition — departing from it
+    needs a reason, and silently dropping three of them is not one.
   - Every node owns the spans that teach it, via `source_spans`. A span may
     be owned by more than one node, but material nobody owns is material the
     learner will never see - so between them the nodes should account for the
@@ -43,19 +48,41 @@ Rules for the node set you produce:
 """
 
 
+SPANS_PER_NODE = 14
+MIN_NODES, MAX_NODES = 4, 14
+
+
+def target_node_count(spans: list[Span]) -> int:
+    """How many objectives this much material should yield.
+
+    A fixed range invites a model to produce the minimum regardless of how
+    much it was given — which is how a 197-span chapter came back as four
+    nodes covering half of it.
+    """
+    substantive = [s for s in spans if s.kind != "heading" and s.word_count > 3]
+    headings = sum(1 for s in spans if s.kind == "heading")
+    estimate = max(len(substantive) // SPANS_PER_NODE, headings - 2)
+    return max(MIN_NODES, min(MAX_NODES, estimate))
+
+
 def plan_nodes(
     provider: Provider, spans: list[Span], *, zone_hint: str | None = None
 ) -> tuple[list[Node], list[str]]:
     """Return (nodes, warnings)."""
     teachable = [s for s in spans if s.teachable]
     allowed = {s.span_id for s in teachable}
+    target = target_node_count(teachable)
+    headings = [s.text for s in teachable if s.kind == "heading"]
 
     task = Task(
         name="plan_nodes",
         system=SYSTEM,
         user=(
             f"Chapter material{f' (zone: {zone_hint})' if zone_hint else ''}.\n"
-            "Decompose it into learning objectives.\n\n"
+            f"TARGET COUNT: about {target} objectives.\n"
+            + (f"\nThe author's own headings, all of which should be covered:\n"
+               + "\n".join(f"  - {h}" for h in headings) + "\n" if headings else "")
+            + "\nDecompose it into learning objectives.\n\n"
             + render_spans(teachable)
         ),
         output_model=NodePlan,
@@ -66,6 +93,7 @@ def plan_nodes(
     nodes: list[Node] = []
     warnings: list[str] = []
     seen: set[str] = set()
+    claimed: set[str] = set()
 
     for draft in plan.nodes:  # type: ignore[attr-defined]
         real, fake = validate_citations(draft.source_spans, allowed, where=draft.node_id)
@@ -83,6 +111,7 @@ def plan_nodes(
             continue
         seen.add(node_id)
 
+        claimed.update(real)
         nodes.append(
             Node(
                 node_id=node_id,
@@ -92,6 +121,18 @@ def plan_nodes(
                 source_spans=real,
                 environment={"kind": draft.environment_kind},  # type: ignore[arg-type]
             )
+        )
+
+    if nodes and len(nodes) < target * 0.6:
+        warnings.append(
+            f"produced {len(nodes)} nodes against a target of {target}: much of "
+            "the chapter will have no lesson"
+        )
+    unclaimed = [s for s in teachable if s.span_id not in claimed and s.word_count > 8]
+    if unclaimed:
+        share = len(unclaimed) / max(1, len(teachable))
+        warnings.append(
+            f"{len(unclaimed)} substantive spans ({share:.0%}) owned by no node"
         )
 
     return nodes, warnings

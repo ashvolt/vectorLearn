@@ -19,13 +19,25 @@ from .common import GROUNDING_RULE
 SYSTEM = f"""\
 You infer prerequisite edges between learning objectives from one textbook.
 
-An edge A -> B means: a learner who has not met A cannot follow B. It is a
-claim about comprehension, not about the order the book happens to use.
+An edge A -> B means: **A must be understood before B makes sense.** A is the
+foundation, B builds on it. Getting this direction backwards is the single
+most damaging mistake available to you — it tells a learner to study the
+advanced topic first — so state the direction to yourself before emitting
+each edge.
 
+  A useful check: if B's objective mentions A's concept as something it
+  operates on, extends, or normalises, then A -> B, never the reverse. An
+  objective that reads "apply X to a Y" depends on Y.
+
+  - The objectives are listed **in the order the book teaches them**. That
+    order is strong evidence: an author who teaches A before B is asserting
+    that B does not depend on A. Edges that run against it are rejected
+    unless the objectives themselves plainly demand it.
   - Add an edge only when B genuinely depends on A. A wrong edge either
     locks a learner out of material they are ready for, or lets them into
     material they are not - both are worse than a missing edge.
-  - Do not add an edge just because A precedes B in the chapter.
+  - Do not add an edge merely because A precedes B; adjacency is not
+    dependency.
   - Prefer the minimal set: if A -> B and B -> C, do not also assert A -> C.
   - The graph must stay acyclic.
   - Some edges are already known from the author's own cross-references and
@@ -35,6 +47,49 @@ claim about comprehension, not about the order the book happens to use.
 
 {GROUNDING_RULE}
 """
+
+
+def node_positions(
+    nodes: list[Node], spans_by_id: dict[str, Span]
+) -> dict[str, float]:
+    """Where each node sits in the book, as the median ordinal of its spans.
+
+    Textbooks are written so that prerequisites come first. That makes
+    document order a strong prior on edge direction — strong enough to
+    overrule a model that has asserted the opposite, which is a mistake
+    small models make often and confidently.
+    """
+    out: dict[str, float] = {}
+    for node in nodes:
+        ordinals = sorted(
+            spans_by_id[s].ordinal for s in node.source_spans if s in spans_by_id
+        )
+        if ordinals:
+            out[node.node_id] = ordinals[len(ordinals) // 2]
+    return out
+
+
+def drop_backward_edges(
+    edges: list[Edge], positions: dict[str, float]
+) -> tuple[list[Edge], list[str]]:
+    """Remove inferred edges that contradict the order the book teaches in.
+
+    Author-declared edges are exempt: a cross-reference is explicit about its
+    direction, and forward references ("as we will see") are already filtered
+    out upstream.
+    """
+    kept: list[Edge] = []
+    warnings: list[str] = []
+    for e in edges:
+        src, dst = positions.get(e.src), positions.get(e.dst)
+        if e.origin != "xref" and src is not None and dst is not None and src > dst:
+            warnings.append(
+                f"dropped {e.src} -> {e.dst}: the book teaches {e.dst} first, "
+                f"so the dependency cannot run this way"
+            )
+            continue
+        kept.append(e)
+    return kept, warnings
 
 
 def _section_owner(nodes: list[Node], spans_by_id: dict[str, Span]) -> dict[str, str]:
@@ -77,13 +132,20 @@ def edges_from_xrefs(
 
 
 def infer_edges(
-    provider: Provider, nodes: list[Node], known: list[Edge]
+    provider: Provider,
+    nodes: list[Node],
+    known: list[Edge],
+    positions: dict[str, float] | None = None,
 ) -> tuple[list[Edge], list[str]]:
     """Ask the model only for edges the cross-reference miner did not find."""
     if len(nodes) < 2:
         return [], []
 
-    roster = "\n".join(f"- {n.node_id}: {n.objective}" for n in nodes)
+    positions = positions or {}
+    ordered = sorted(nodes, key=lambda n: positions.get(n.node_id, 0))
+    roster = "\n".join(
+        f"{i}. {n.node_id}: {n.objective}" for i, n in enumerate(ordered, 1)
+    )
     known_txt = (
         "\n".join(f"- {e.src} -> {e.dst}" for e in known) or "(none)"
     )
@@ -91,9 +153,11 @@ def infer_edges(
         name="infer_edges",
         system=SYSTEM,
         user=(
-            f"OBJECTIVES\n{roster}\n\nKNOWN EDGES (from the author's own "
-            f"cross-references — do not repeat)\n{known_txt}\n\n"
-            "Return the additional prerequisite edges these objectives require."
+            f"OBJECTIVES, in the order the book teaches them\n{roster}\n\n"
+            f"KNOWN EDGES (from the author's own cross-references — do not "
+            f"repeat)\n{known_txt}\n\n"
+            "Return the additional prerequisite edges these objectives require. "
+            "Remember that A -> B means A must be understood first."
         ),
         output_model=EdgePlan,
         tier="reason",
