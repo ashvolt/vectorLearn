@@ -272,3 +272,48 @@ def test_show_with_no_node_id_lists_them(doc, tmp_path, capsys, monkeypatch):
 
     assert main(["show"]) == 0
     assert "partition" in capsys.readouterr().out
+
+
+# --- the gate's own honesty -------------------------------------------------
+
+def _scored(doc, total, supported, contradicted=0):
+    from vectorlearn.evals.fidelity import AssertionVerdict, FidelityResult
+
+    r = FidelityResult(total=total, supported=supported, nodes_audited=2,
+                       contradicted=contradicted,
+                       unsupported=total - supported - contradicted)
+    r.findings = [AssertionVerdict(step_id="s1", assertion="a",
+                                   verdict="unsupported", reasoning="r")]
+    return r
+
+
+def test_a_small_sample_does_not_decide_the_fidelity_gate(doc):
+    """One failure in eleven assertions puts the true rate anywhere from a few
+    percent to forty. Reporting FAIL from that states a confidence the
+    measurement does not have."""
+    course = _built_course(doc)
+    text = render_report(course, doc, measure_coverage(course, doc.spans),
+                         _scored(doc, total=11, supported=10), [])
+    assert "[ ?? ] fidelity" in text
+    assert "only 11 assertions" in text
+    assert "GATE UNDECIDED" in text
+
+
+def test_a_large_sample_does_decide_it(doc):
+    from vectorlearn.evals.report import MIN_ASSERTIONS_FOR_GATE
+
+    course = _built_course(doc)
+    n = MIN_ASSERTIONS_FOR_GATE + 20
+    text = render_report(course, doc, measure_coverage(course, doc.spans),
+                         _scored(doc, total=n, supported=int(n * 0.90)), [])
+    assert "[FAIL] fidelity" in text
+    assert "GATE FAILED" in text
+
+
+def test_a_contradiction_fails_the_gate_at_any_sample_size(doc):
+    """A claim the source refutes is not a statistical question."""
+    course = _built_course(doc)
+    text = render_report(course, doc, measure_coverage(course, doc.spans),
+                         _scored(doc, total=8, supported=7, contradicted=1), [])
+    assert "[FAIL] no contradicted claims" in text
+    assert "GATE FAILED" in text

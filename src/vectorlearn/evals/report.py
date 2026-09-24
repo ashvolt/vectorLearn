@@ -18,6 +18,11 @@ MIN_FIDELITY = 0.95
 MAX_CONTRADICTED = 0
 MIN_WORD_COVERAGE = 0.80
 
+# A rate measured on a handful of assertions carries an interval wide enough
+# to contain both pass and fail. Reporting PASS or FAIL from it states a
+# confidence the measurement does not have, so below this the row abstains.
+MIN_ASSERTIONS_FOR_GATE = 60
+
 
 def _bar(value: float, width: int = 24) -> str:
     filled = int(round(value * width))
@@ -112,12 +117,17 @@ def render_report(
     add("")
     add("-" * 72)
     add("GATE")
-    gates: list[tuple[str, bool, str]] = []
+    gates: list[tuple[str, bool | None, str]] = []
     if fidelity and fidelity.total:
+        enough = fidelity.total >= MIN_ASSERTIONS_FOR_GATE
         gates.append((
             f"fidelity >= {MIN_FIDELITY:.0%}",
-            fidelity.fidelity >= MIN_FIDELITY,
-            f"{fidelity.fidelity:.1%}",
+            (fidelity.fidelity >= MIN_FIDELITY) if enough else None,
+            f"{fidelity.fidelity:.1%}" + (
+                "" if enough
+                else f"  (only {fidelity.total} assertions; "
+                     f"{MIN_ASSERTIONS_FOR_GATE} needed to judge)"
+            ),
         ))
         gates.append((
             "no contradicted claims",
@@ -141,14 +151,20 @@ def render_report(
     ))
 
     for label, ok, detail in gates:
-        add(f"  [{'PASS' if ok else 'FAIL'}] {label:<34} {detail}")
+        mark = "PASS" if ok else ("FAIL" if ok is False else " ?? ")
+        add(f"  [{mark}] {label:<34} {detail}")
 
-    passed = all(ok for _, ok, _ in gates)
+    decided = [ok for _, ok, _ in gates if ok is not None]
+    undecided = any(ok is None for _, ok, _ in gates)
     add("")
-    if passed:
-        add("  GATE PASSED — the content layer holds. Phase 1 is justified.")
-    else:
+    if not all(decided):
         add("  GATE FAILED — fix generation before building any UI on top of this.")
+    elif undecided:
+        add("  GATE UNDECIDED — everything measurable passes, but the sample is")
+        add("  too small to rule on. Build more nodes and score them before")
+        add("  concluding anything either way.")
+    else:
+        add("  GATE PASSED — the content layer holds. Phase 1 is justified.")
     add("")
     add("  Numbers are necessary, not sufficient. Read the generated nodes")
     add("  yourself before trusting this scorecard: `vectorlearn show <node_id>`.")

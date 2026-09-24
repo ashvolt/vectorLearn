@@ -40,7 +40,9 @@ You audit generated course material against the book excerpts it cites.
 
 For each step you are given, break its body into individual factual
 assertions - definitions, causal claims, complexity statements, procedural
-instructions, numeric values. Then judge each one against the SOURCE SPANS
+instructions, numeric values. Decompose finely: a paragraph of explanation
+usually carries three to eight separate claims, and a step that yields only
+one has not been broken down. Judge each one against the SOURCE SPANS
 alone:
 
   supported     the spans state or directly entail this assertion

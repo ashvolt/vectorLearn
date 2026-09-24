@@ -32,13 +32,18 @@ Produce 5 to 9 steps that teach the objective, in this shape:
                  the answer - this is where the learning happens.
   code_write     a task for the playground. `starter_code` is a stub,
                  `test_code` holds runnable assertions that decide pass/fail.
-  pitfall        the mistake people actually make here, and why it is wrong.
+  pitfall        a mistake the SOURCE SPANS themselves identify, and why it
+                 is wrong. Only include this step if the spans name the
+                 error. Warnings you know from elsewhere about the library
+                 or language are exactly the drift this whole task forbids —
+                 omit the step rather than supply one from memory.
 
 Required mix:
   - at least one `worked_example`
   - at least one `predict`
   - at least one `code_write` IF this node has a code environment
-  - `pitfall` whenever the source material names a common error
+  - `pitfall` ONLY where the source material names a common error. No
+    pitfall step is far better than one you supplied yourself.
   - do not open with a preamble step about what the lesson will cover
 
 `est_seconds` is your honest estimate of how long that step takes a learner
