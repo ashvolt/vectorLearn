@@ -200,6 +200,37 @@ def _grade(q: Qualification, stats: list[CallStat]) -> Qualification:
 
 _BADGE = {"gold": "GOLD", "silver": "SILVER", "bronze": "BRONZE", "unqualified": "UNQUAL"}
 
+GRADE_ORDER: dict[str, int] = {"gold": 0, "silver": 1, "bronze": 2, "unqualified": 3}
+
+
+def record(results: list[Qualification], path: Path) -> None:
+    """Save grades so `build` can prefer a model that was actually tested."""
+    import json
+
+    rows = [
+        {"model": q.model, "grade": q.grade,
+         "tokens_per_second": round(q.tokens_per_second, 2)}
+        for q in results
+    ]
+    path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def best_qualified(path: Path) -> tuple[str, str] | None:
+    """The best-graded model from a previous qualification, if any passed."""
+    import json
+
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+    usable = [r for r in rows if r.get("grade") in ("gold", "silver")]
+    if not usable:
+        return None
+    best = min(usable, key=lambda r: (GRADE_ORDER[r["grade"]],
+                                      -r.get("tokens_per_second", 0)))
+    return best["model"], best["grade"]
+
 
 def render_qualification(results: list[Qualification]) -> str:
     L: list[str] = []

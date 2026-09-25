@@ -266,8 +266,13 @@ def test_all_file_io_declares_utf8():
     root = Path(vectorlearn.__file__).parent
     offenders = []
     for path in root.rglob("*.py"):
-        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"\.(read|write)_text\(", line) and "encoding=" not in line:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines, 1):
+            if not re.search(r"\.(read|write)_text\(", line):
+                continue
+            # A call may wrap; read to the end of the statement before judging.
+            statement = " ".join(lines[i - 1:i + 3])
+            if "encoding=" not in statement:
                 offenders.append(f"{path.relative_to(root)}:{i}")
     assert not offenders, "text IO without an explicit encoding: " + ", ".join(offenders)
 
@@ -389,3 +394,55 @@ def test_lesson_passes_run_on_the_teaching_tier():
     src = __import__("inspect").getsource(lessons)
     assert src.count('tier="teach"') == 2
     assert 'tier="reason"' not in src
+
+
+# --- choosing a model by evidence rather than size --------------------------
+
+def test_a_qualified_model_beats_a_bigger_unqualified_one(tmp_path):
+    """Pulling a 14B to compare against silently promoted it to every pass,
+    including the one it was too large to run. Size is not evidence."""
+    import json
+    from vectorlearn.qualify import best_qualified
+
+    path = tmp_path / "qualification.json"
+    path.write_text(json.dumps([
+        {"model": "qwen2.5:14b", "grade": "unqualified", "tokens_per_second": 0.4},
+        {"model": "qwen2.5:7b", "grade": "gold", "tokens_per_second": 3.5},
+    ]), encoding="utf-8")
+
+    assert best_qualified(path) == ("qwen2.5:7b", "gold")
+
+
+def test_gold_beats_silver_and_speed_breaks_ties(tmp_path):
+    import json
+    from vectorlearn.qualify import best_qualified
+
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([
+        {"model": "slow-gold", "grade": "gold", "tokens_per_second": 1.0},
+        {"model": "fast-gold", "grade": "gold", "tokens_per_second": 9.0},
+        {"model": "fast-silver", "grade": "silver", "tokens_per_second": 40.0},
+    ]), encoding="utf-8")
+
+    assert best_qualified(path)[0] == "fast-gold"
+
+
+def test_bronze_and_unqualified_are_not_offered(tmp_path):
+    import json
+    from vectorlearn.qualify import best_qualified
+
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([
+        {"model": "a", "grade": "bronze", "tokens_per_second": 9.0},
+        {"model": "b", "grade": "unqualified", "tokens_per_second": 9.0},
+    ]), encoding="utf-8")
+    assert best_qualified(path) is None
+
+
+def test_a_missing_or_broken_record_is_not_an_error(tmp_path):
+    from vectorlearn.qualify import best_qualified
+
+    assert best_qualified(tmp_path / "absent.json") is None
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    assert best_qualified(bad) is None

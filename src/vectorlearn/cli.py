@@ -52,20 +52,34 @@ class ProviderError(RuntimeError):
 
 
 def _resolve_model(args) -> str:
-    """Use the requested model, else the largest one this machine has."""
+    """Use the requested model, else the best one known to work here.
+
+    Largest-installed was the original default and it is a trap: pulling a
+    bigger model to compare against silently promoted it to every pass,
+    including ones it was too large to run. A model that has actually been
+    graded is a far better default than one that is merely big.
+    """
     from .llm import installed_models
+    from .qualify import best_qualified
 
     if getattr(args, "model", None):
         return args.model
 
+    if qualified := best_qualified(OUT / "qualification.json"):
+        model, grade = qualified
+        print(f"[no --model given; using {model}, graded {grade} by "
+              f"`vectorlearn qualify`]\n", file=sys.stderr)
+        return model
+
     found = installed_models(getattr(args, "host", None) or DEFAULT_HOST)
     if not found:
-        raise ProviderError("no models installed — try `ollama pull qwen2.5:14b`")
-    chosen = found[0]["name"]
-    print(f"[no --model given; using largest installed: {chosen} "
-          f"({chosen and found[0]['param_size']}, {found[0]['gib']} GiB)]\n",
+        raise ProviderError("no models installed — try `ollama pull qwen2.5:7b`")
+    chosen = found[0]
+    print(f"[no --model given and none qualified; using the largest installed: "
+          f"{chosen['name']} ({chosen['param_size']}, {chosen['gib']} GiB).\n"
+          f" Run `vectorlearn qualify --all` to pick on evidence instead of size.]\n",
           file=sys.stderr)
-    return chosen
+    return chosen["name"]
 
 
 def _provider(args):
@@ -406,10 +420,13 @@ def cmd_qualify(args) -> int:
     order = {"gold": 0, "silver": 1, "bronze": 2, "unqualified": 3}
     results.sort(key=lambda q: (order[q.grade], -q.tokens_per_second))
 
+    from .qualify import record
+
     report = render_qualification(results)
     print(report)
     OUT.mkdir(exist_ok=True)
     (OUT / "qualification.txt").write_text(report, encoding="utf-8")
+    record(results, OUT / "qualification.json")
     return 0 if results and results[0].grade in ("gold", "silver") else 1
 
 
