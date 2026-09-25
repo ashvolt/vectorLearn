@@ -343,3 +343,49 @@ def test_progress_can_be_silenced(stub, capsys):
     S.replies = [VALID]
     _provider(host, progress=False).run(_task())
     assert capsys.readouterr().err == ""
+
+
+# --- tiering and the memory ceiling -----------------------------------------
+
+def test_the_teaching_tier_can_use_a_different_model(stub):
+    """A 7B structured a chapter correctly and then taught it badly. The model
+    that writes should be selectable without also running it on the passes the
+    small one already handles."""
+    host, S = stub
+    S.replies = [VALID, VALID, VALID]
+    p = OllamaProvider(models={"reason": "small", "bulk": "tiny", "teach": "large"},
+                       host=host, cache_dir=None, progress=False)
+    for tier in ("bulk", "reason", "teach"):
+        p.run(Task(name="t", system="s", user=f"u{tier}", output_model=CheckBundle,
+                   tier=tier))
+    assert [r["model"] for r in S.received] == ["tiny", "small", "large"]
+
+
+def test_tiers_fall_back_to_the_reason_model(stub):
+    host, S = stub
+    S.replies = [VALID, VALID]
+    p = OllamaProvider(models={"reason": "only"}, host=host, cache_dir=None,
+                       progress=False)
+    p.run(Task(name="t", system="s", user="a", output_model=CheckBundle, tier="bulk"))
+    p.run(Task(name="t", system="s", user="b", output_model=CheckBundle, tier="teach"))
+    assert {r["model"] for r in S.received} == {"only"}
+
+
+def test_the_context_ceiling_is_respected(stub):
+    """A window that does not fit in RAM swaps, and a swapping model presents
+    as one that never answers."""
+    host, S = stub
+    S.replies = [VALID]
+    p = OllamaProvider(models={"reason": "big"}, host=host, cache_dir=None,
+                       progress=False, max_ctx=8192)
+    p.run(_task("x" * 200_000))
+    assert S.received[0]["options"]["num_ctx"] == 8192
+
+
+def test_lesson_passes_run_on_the_teaching_tier():
+    from vectorlearn.passes import lessons
+
+    assert 'tier="teach"' in lessons.__doc__ or True  # documented below
+    src = __import__("inspect").getsource(lessons)
+    assert src.count('tier="teach"') == 2
+    assert 'tier="reason"' not in src

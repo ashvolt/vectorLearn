@@ -144,7 +144,7 @@ def generate_steps(
             + render_spans(spans)
         ),
         output_model=StepBundle,
-        tier="reason",
+        tier="teach",
         meta={"node_id": node.node_id},
     )
     bundle = provider.run(task)
@@ -195,7 +195,7 @@ def generate_checks(
             + render_spans(spans)
         ),
         output_model=CheckBundle,
-        tier="reason",
+        tier="teach",
         meta={"node_id": node.node_id},
     )
     bundle = provider.run(task)

@@ -87,10 +87,15 @@ def _provider(args):
     try:
         reason = _resolve_model(args)
         return OllamaProvider(
-            models={"reason": reason, "bulk": getattr(args, "bulk_model", None) or reason},
+            models={
+                "reason": reason,
+                "bulk": getattr(args, "bulk_model", None) or reason,
+                "teach": getattr(args, "lesson_model", None) or reason,
+            },
             host=getattr(args, "host", None) or DEFAULT_HOST,
             cache_dir=cache_dir,
             timeout=getattr(args, "timeout", None) or DEFAULT_TIMEOUT,
+            max_ctx=getattr(args, "max_ctx", None),
         )
     except OllamaUnavailable as exc:
         raise ProviderError(str(exc)) from exc
@@ -440,6 +445,15 @@ def main(argv: list[str] | None = None) -> int:
     def model_opts(sp):
         sp.add_argument("--model", help="ollama model; defaults to the largest installed")
         sp.add_argument("--bulk-model", help="cheaper model for span classification")
+        sp.add_argument("--lesson-model", metavar="MODEL",
+                        help="model for writing lessons (passes D and E). "
+                             "Structuring a chapter and teaching from it need "
+                             "different capability; this runs the larger model "
+                             "only where the writing happens")
+        sp.add_argument("--max-ctx", type=int, metavar="TOKENS",
+                        help="cap the context window. A window that does not "
+                             "fit in RAM swaps, which looks like a hang; try "
+                             "8192 when running a larger model on a small machine")
         sp.add_argument("--host", help=f"ollama host (default {DEFAULT_HOST})")
         sp.add_argument("--timeout", type=float, metavar="SECONDS",
                         help=f"per-call limit (default {DEFAULT_TIMEOUT:.0f}s); "

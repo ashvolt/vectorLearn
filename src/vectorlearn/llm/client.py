@@ -32,7 +32,13 @@ from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 
-Tier = Literal["bulk", "reason"]
+# Three jobs, three difficulties. Structuring a chapter and writing a lesson
+# from it turned out to need different capability: a 7B held the schema,
+# stayed grounded and built a correct dependency graph, then produced a
+# faithful lesson that taught nothing. Splitting the tiers lets the model that
+# can write be used only where writing happens, which matters when the larger
+# model is too slow or too large to run everywhere.
+Tier = Literal["bulk", "reason", "teach"]
 
 MAX_REPAIRS = 2
 MAX_TOKENS = 16_000
@@ -107,6 +113,8 @@ class AnthropicProvider:
     DEFAULT_MODELS: dict[Tier, str] = {
         # Bulk span classification: thousands of short, easy judgements.
         "bulk": "claude-haiku-4-5",
+        # Writing the lesson itself.
+        "teach": "claude-opus-5",
         # Node planning, edge inference, lesson and check generation, and the
         # fidelity judge. The judge stays on the reasoning tier on purpose:
         # a weak judge produces a flattering Phase 0 number, which is worse

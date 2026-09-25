@@ -48,7 +48,7 @@ DEFAULT_TIMEOUT = 3600.0
 KEEP_ALIVE = "30m"
 
 # Structure passes want near-determinism; lesson prose is allowed a little room.
-TEMPERATURE: dict[Tier, float] = {"bulk": 0.0, "reason": 0.3}
+TEMPERATURE: dict[Tier, float] = {"bulk": 0.0, "reason": 0.3, "teach": 0.4}
 
 # Ollama silently truncates past num_ctx, so we ask for headroom over the
 # prompt rather than trusting the model's default.
@@ -165,13 +165,16 @@ class OllamaProvider:
         timeout: float = DEFAULT_TIMEOUT,
         record: bool = False,
         progress: bool = True,
+        max_ctx: int | None = None,
     ) -> None:
         if not models or "reason" not in models:
             raise ValueError("OllamaProvider needs at least a 'reason' model")
         self.models: dict[Tier, str] = {
-            "bulk": models.get("bulk", models["reason"]),
+            "bulk": models.get("bulk") or models["reason"],
             "reason": models["reason"],
+            "teach": models.get("teach") or models["reason"],
         }
+        self.max_ctx = max_ctx or CTX_CEILING
         self.host = host.rstrip("/")
         self.cache = _Cache(Path(cache_dir) if cache_dir else None)
         self.timeout = timeout
@@ -270,8 +273,16 @@ class OllamaProvider:
         )
 
     def _ctx_for(self, prompt: str) -> int:
+        """Size the window to the prompt, within the machine's ceiling.
+
+        The KV cache grows with the window, and on a memory-bound machine a
+        window that does not fit turns into swapping — which presents as a
+        model that never answers rather than one that refuses. `--max-ctx`
+        exists so a larger model can be used at all on such a machine.
+        """
         need = len(prompt) // 4 + CTX_HEADROOM_TOKENS
-        return max(CTX_FLOOR, min(CTX_CEILING, 1 << (need - 1).bit_length()))
+        want = max(CTX_FLOOR, min(CTX_CEILING, 1 << (need - 1).bit_length()))
+        return min(want, self.max_ctx)
 
     def _announce(self, task: Task, model: str, num_ctx: int, attempt: int) -> None:
         """Say what is starting. On a slow machine a silent minute is

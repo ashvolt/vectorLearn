@@ -114,8 +114,36 @@ without saying so), Pydantic `$ref`/`$defs` are inlined before being sent, and
 the schema is also described in the prompt — grammar constraints guarantee
 well-formed JSON, not sensible field contents.
 
-Tier routing (`bulk` / `reason`) lets a small model do span classification while
-a larger one writes lessons; `--model X` alone runs everything on one.
+### Three tiers
+
+Structuring a chapter and teaching from it turned out to need different
+capability. A 7B held the schema, stayed grounded, and built a correct
+dependency graph — then wrote a faithful lesson that taught nothing: two
+steps making the same point, a "worked example" that split a config block
+across four reveals, the chapter's one conceptual leap left as a bare line
+of code. The prose was fine. The judgement about what was worth teaching
+was not.
+
+So the passes are tiered by what they actually demand:
+
+| Tier | Passes | Flag |
+|------|--------|------|
+| `bulk` | span classification | `--bulk-model` |
+| `reason` | objectives, edges, the fidelity judge | `--model` |
+| `teach` | lessons and their gates | `--lesson-model` |
+
+`--model X` alone runs everything on one model. Setting `--lesson-model`
+runs the larger model only where the writing happens, which matters when it
+is too slow to run everywhere:
+
+```bash
+vectorlearn build book.epub --chapter 8 \
+    --model qwen2.5:7b --lesson-model qwen2.5:14b --max-ctx 8192
+```
+
+`--max-ctx` caps the context window. The KV cache grows with the window, and
+a window that does not fit in RAM swaps — which presents as a model that
+never answers rather than one that refuses.
 
 ## Usage
 
